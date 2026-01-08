@@ -2,8 +2,8 @@
 OKX SOL 全仓合约交易机器人配置文件
 """
 import os
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, List
 
 
 @dataclass
@@ -12,7 +12,7 @@ class OKXConfig:
     api_key: str = ""
     secret_key: str = ""
     passphrase: str = ""
-    # 是否使用测试网
+    # 是否使用测试网（模拟盘）
     use_testnet: bool = True
     
     # API 端点
@@ -38,6 +38,30 @@ class TelegramConfig:
 
 
 @dataclass
+class GridConfig:
+    """网格交易配置"""
+    # 跌幅触发买入（美元）
+    normal_drop_min: float = 3.2   # 正常跌幅最小值
+    normal_drop_max: float = 3.6   # 正常跌幅最大值
+    large_drop: float = 5.0        # 大跌幅阈值
+    
+    # 高价区间买入张数 (≥$120)
+    high_price_normal_qty: int = 1  # 正常跌幅买入张数
+    high_price_large_qty: int = 2   # 大跌幅买入张数
+    
+    # 低价区间买入张数 (<$120)
+    low_price_normal_qty: int = 2   # 正常跌幅买入张数
+    low_price_large_qty: int = 3    # 大跌幅买入张数
+    
+    # 分批止盈配置
+    reserve_qty: int = 1            # 保留张数（等更高价卖出）
+    reserve_profit_target: float = 10.0  # 保留仓位的止盈目标（美元）
+    
+    # 价格记录（用于计算跌幅）
+    last_buy_price: float = 0.0     # 上次买入价格
+
+
+@dataclass
 class TradingStrategy:
     """交易策略配置"""
     # 交易对
@@ -50,10 +74,10 @@ class TradingStrategy:
     safe_price_min: float = 90.0   # 低于此价格停止交易
     safe_price_max: float = 150.0  # 高于此价格停止交易
     
-    # 合约金额配置（按本金比例计算）
-    # 价格 >= 120 时，合约总金额 = 本金 * 1.1 倍
+    # 合约金额配置（按本金比例计算，用于限制最大持仓）
+    # 价格 >= 120 时，最大合约金额 = 本金 * 1.1 倍
     high_price_leverage_ratio: float = 1.1
-    # 价格 < 120 时，合约总金额 = 本金 * 1.8 倍
+    # 价格 < 120 时，最大合约金额 = 本金 * 1.8 倍
     low_price_leverage_ratio: float = 1.8
     
     # 利润百分比配置（基于价格的线性关系）
@@ -82,6 +106,9 @@ class TradingStrategy:
     
     # 默认杠杆倍数（固定2倍杠杆）
     default_leverage: int = 2
+    
+    # 网格交易配置
+    grid: GridConfig = field(default_factory=GridConfig)
     
     # 测试模式配置（写死的测试金额）
     test_mode: bool = False
@@ -119,11 +146,24 @@ class AppConfig:
             enabled=os.getenv("TELEGRAM_ENABLED", "true").lower() == "true"
         )
         
+        grid_config = GridConfig(
+            normal_drop_min=float(os.getenv("GRID_NORMAL_DROP_MIN", "3.2")),
+            normal_drop_max=float(os.getenv("GRID_NORMAL_DROP_MAX", "3.6")),
+            large_drop=float(os.getenv("GRID_LARGE_DROP", "5.0")),
+            high_price_normal_qty=int(os.getenv("GRID_HIGH_NORMAL_QTY", "1")),
+            high_price_large_qty=int(os.getenv("GRID_HIGH_LARGE_QTY", "2")),
+            low_price_normal_qty=int(os.getenv("GRID_LOW_NORMAL_QTY", "2")),
+            low_price_large_qty=int(os.getenv("GRID_LOW_LARGE_QTY", "3")),
+            reserve_qty=int(os.getenv("GRID_RESERVE_QTY", "1")),
+            reserve_profit_target=float(os.getenv("GRID_RESERVE_PROFIT", "10.0"))
+        )
+        
         strategy_config = TradingStrategy(
             capital=float(os.getenv("TRADING_CAPITAL", "1000.0")),
             test_mode=os.getenv("TEST_MODE", "false").lower() == "true",
             safe_price_min=float(os.getenv("SAFE_PRICE_MIN", "90.0")),
-            safe_price_max=float(os.getenv("SAFE_PRICE_MAX", "150.0"))
+            safe_price_max=float(os.getenv("SAFE_PRICE_MAX", "150.0")),
+            grid=grid_config
         )
         
         return cls(

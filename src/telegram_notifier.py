@@ -64,6 +64,157 @@ class TelegramNotifier:
             self.logger.error(f"Telegram 消息发送失败: {result}")
             return False
     
+    def send_grid_buy_notification(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        quantity: int,
+        total_contract_value: float,
+        drop_amount: float,
+        drop_type: str,
+        current_position_qty: float,
+        current_position_value: float,
+        max_amount: float,
+        remaining_amount: float
+    ) -> bool:
+        """
+        发送网格买入通知
+        
+        Args:
+            symbol: 交易对
+            direction: 方向
+            entry_price: 买入价格
+            quantity: 买入张数
+            total_contract_value: 本次买入金额
+            drop_amount: 跌幅金额
+            drop_type: 跌幅类型 (normal/large)
+            current_position_qty: 当前持仓张数
+            current_position_value: 当前持仓价值
+            max_amount: 最大限额
+            remaining_amount: 剩余额度
+        """
+        drop_type_cn = "大跌" if drop_type == "large" else "正常跌幅"
+        direction_cn = "做多" if direction.upper() == "LONG" else "做空"
+        
+        message = f"""
+🟢 <b>网格买入</b> 🟢
+
+📊 <b>交易对:</b> {symbol}
+📈 <b>方向:</b> {direction_cn}
+💰 <b>买入价格:</b> ${entry_price:.2f}
+📦 <b>买入张数:</b> {quantity} 张
+💵 <b>本次金额:</b> ${total_contract_value:.2f}
+
+<b>━━━━━ 触发条件 ━━━━━</b>
+📉 <b>跌幅:</b> ${drop_amount:.2f} ({drop_type_cn})
+
+<b>━━━━━ 持仓状态 ━━━━━</b>
+📦 <b>当前持仓:</b> {current_position_qty:.0f} 张
+💵 <b>持仓价值:</b> ${current_position_value:.2f}
+🎯 <b>最大额度:</b> ${max_amount:.2f}
+💰 <b>剩余额度:</b> ${remaining_amount:.2f}
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+    
+    def send_grid_sell_notification(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        exit_price: float,
+        sell_quantity: int,
+        reserve_quantity: int,
+        total_contract_value: float,
+        pnl: float,
+        pnl_pct: float,
+        is_reserve_sell: bool,
+        total_pnl: float
+    ) -> bool:
+        """
+        发送网格卖出通知
+        
+        Args:
+            symbol: 交易对
+            direction: 方向
+            entry_price: 开仓价格
+            exit_price: 平仓价格
+            sell_quantity: 卖出张数
+            reserve_quantity: 保留张数
+            total_contract_value: 卖出金额
+            pnl: 盈亏金额
+            pnl_pct: 盈亏百分比
+            is_reserve_sell: 是否是保留仓位卖出
+            total_pnl: 累计盈亏
+        """
+        direction_cn = "做多" if direction.upper() == "LONG" else "做空"
+        sell_type = "保留仓位止盈" if is_reserve_sell else "策略止盈"
+        
+        pnl_emoji = "📈" if pnl >= 0 else "📉"
+        pnl_sign = "+" if pnl >= 0 else ""
+        
+        message = f"""
+💰 <b>{sell_type}</b> 💰
+
+📊 <b>交易对:</b> {symbol}
+📈 <b>方向:</b> {direction_cn}
+💰 <b>开仓价格:</b> ${entry_price:.2f}
+💵 <b>平仓价格:</b> ${exit_price:.2f}
+📦 <b>卖出张数:</b> {sell_quantity} 张
+📦 <b>保留张数:</b> {reserve_quantity} 张
+💎 <b>卖出金额:</b> ${total_contract_value:.2f}
+
+<b>━━━━━ 交易结果 ━━━━━</b>
+{pnl_emoji} <b>盈亏:</b> ${pnl_sign}{pnl:.2f} ({pnl_sign}{pnl_pct:.2f}%)
+
+<b>━━━━━ 累计统计 ━━━━━</b>
+📈 <b>累计盈亏:</b> ${total_pnl:.2f}
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+    
+    def send_position_limit_warning(
+        self,
+        current_price: float,
+        current_position_value: float,
+        requested_amount: float,
+        max_amount: float,
+        zone: str
+    ) -> bool:
+        """
+        发送本金限制警告
+        
+        Args:
+            current_price: 当前价格
+            current_position_value: 当前持仓价值
+            requested_amount: 请求买入金额
+            max_amount: 最大限额
+            zone: 价格区间
+        """
+        zone_cn = "高价区间" if zone == "high" else "低价区间"
+        ratio = "1.1x" if zone == "high" else "1.8x"
+        
+        message = f"""
+⚠️ <b>本金限制警告</b> ⚠️
+
+📊 <b>当前价格:</b> ${current_price:.2f}
+📍 <b>价格区间:</b> {zone_cn} ({ratio})
+
+<b>━━━━━ 额度状态 ━━━━━</b>
+💵 <b>当前持仓:</b> ${current_position_value:.2f}
+📦 <b>请求买入:</b> ${requested_amount:.2f}
+🚫 <b>总计:</b> ${current_position_value + requested_amount:.2f}
+🎯 <b>最大限额:</b> ${max_amount:.2f}
+
+❌ 超出限额，买入已取消
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+    
     def send_trade_open_notification(
         self,
         symbol: str,
@@ -77,16 +228,6 @@ class TelegramNotifier:
     ) -> bool:
         """
         发送开仓通知
-        
-        Args:
-            symbol: 交易对
-            direction: 方向 (LONG/SHORT)
-            entry_price: 开仓价格
-            position_size: 持仓张数
-            total_contract_value: 合约总金额 (价格 × 张数)
-            leverage: 杠杆倍数
-            target_profit_pct: 目标利润百分比
-            take_profit_price: 止盈价格
         """
         emoji = "🟢" if direction.upper() == "LONG" else "🔴"
         direction_cn = "做多" if direction.upper() == "LONG" else "做空"
@@ -122,21 +263,9 @@ class TelegramNotifier:
     ) -> bool:
         """
         发送平仓通知
-        
-        Args:
-            symbol: 交易对
-            direction: 方向 (LONG/SHORT)
-            entry_price: 开仓价格
-            exit_price: 平仓价格
-            position_size: 持仓张数
-            total_contract_value: 合约总金额 (平仓价格 × 张数)
-            pnl: 盈亏金额
-            pnl_pct: 盈亏百分比
-            total_pnl: 累计盈亏
         """
         direction_cn = "做多" if direction.upper() == "LONG" else "做空"
         
-        # 根据盈亏选择 emoji
         if pnl > 0:
             result_emoji = "💰"
             result_text = "盈利"
@@ -182,14 +311,6 @@ class TelegramNotifier:
     ) -> bool:
         """
         发送策略参数更新通知
-        
-        Args:
-            current_price: 当前价格
-            price_zone: 价格区间
-            profit_target: 目标利润
-            total_contract_value: 合约总金额 (价格 × 张数)
-            position_size: 持仓张数
-            leverage: 杠杆倍数
         """
         zone_emoji = "🔥" if price_zone.upper() == "HIGH" else "❄️"
         zone_cn = "高价区间" if price_zone.upper() == "HIGH" else "低价区间"
@@ -266,6 +387,57 @@ class TelegramNotifier:
 """
         return self.send_message(message.strip())
     
+    def send_safety_warning(
+        self,
+        current_price: float,
+        safe_min: float,
+        safe_max: float,
+        is_below: bool
+    ) -> bool:
+        """
+        发送安全警告
+        """
+        if is_below:
+            reason = f"低于安全下限 ${safe_min:.0f}"
+        else:
+            reason = f"高于安全上限 ${safe_max:.0f}"
+        
+        message = f"""
+🔴 <b>安全警告</b> 🔴
+
+📊 <b>当前价格:</b> ${current_price:.2f}
+⚠️ {reason}
+📍 <b>安全范围:</b> ${safe_min:.0f} - ${safe_max:.0f}
+
+❌ 交易功能已暂停
+⏳ 等待价格回归安全范围
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+    
+    def send_safety_restored(
+        self,
+        current_price: float,
+        safe_min: float,
+        safe_max: float
+    ) -> bool:
+        """
+        发送安全恢复通知
+        """
+        message = f"""
+🟢 <b>安全恢复</b> 🟢
+
+📊 <b>当前价格:</b> ${current_price:.2f}
+📍 <b>安全范围:</b> ${safe_min:.0f} - ${safe_max:.0f}
+
+✅ 价格回归安全范围
+✅ 交易功能已恢复
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+    
     def send_daily_summary(
         self,
         total_trades: int,
@@ -299,29 +471,12 @@ if __name__ == "__main__":
     # 测试代码
     logging.basicConfig(level=logging.DEBUG)
     
-    # 创建测试配置（需要填入真实的 token 和 chat_id 才能测试）
     config = TelegramConfig(
         bot_token="YOUR_BOT_TOKEN",
         chat_id="YOUR_CHAT_ID",
-        enabled=False  # 设为 False 避免实际发送
+        enabled=False
     )
     
     notifier = TelegramNotifier(config)
     
-    # 测试消息格式
-    print("测试开仓通知格式:")
-    # 模拟: 价格 $120, 开 5 张, 合约总金额 = 120 * 5 = 600
-    entry_price = 120.0
-    position_size = 5.0
-    total_contract_value = entry_price * position_size  # 600
-    
-    notifier.send_trade_open_notification(
-        symbol="SOL-USDT-SWAP",
-        direction="LONG",
-        entry_price=entry_price,
-        position_size=position_size,
-        total_contract_value=total_contract_value,
-        leverage=2,
-        target_profit_pct=2.7,
-        take_profit_price=123.24
-    )
+    print("Telegram 通知模块测试完成")
