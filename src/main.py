@@ -153,7 +153,14 @@ class TradingBot:
                 inst_type="SWAP",
                 inst_id=self.config.strategy.symbol
             )
+            self.logger.debug(f"OKX 持仓原始数据: {pos_data}")
             positions = PositionInfo.from_response(pos_data)
+            if positions:
+                self.logger.debug(f"解析到持仓: {len(positions)} 个")
+                for p in positions:
+                    self.logger.debug(f"  {p.inst_id}: {p.pos} 张 @ ${p.avg_px:.2f}")
+            else:
+                self.logger.debug("未解析到持仓")
             return positions[0] if positions else None
         except Exception as e:
             self.logger.error(f"获取持仓异常: {e}")
@@ -499,7 +506,24 @@ class TradingBot:
             self.strategy.highest_price = price
             self.strategy.last_buy_price = price
         
-        self.notifier.send_bot_status("running", current_price=price)
+        # 获取持仓信息用于通知
+        position = self.get_current_position()
+        has_position = position is not None and abs(position.pos) > 0
+        position_info = None
+        if has_position:
+            # 单向持仓模式根据 pos 正负判断方向
+            if position.pos_side == "net":
+                direction = "LONG" if position.pos > 0 else "SHORT"
+            else:
+                direction = "LONG" if position.pos_side == "long" else "SHORT"
+            position_info = {
+                "direction": direction,
+                "entry_price": position.avg_px,
+                "size": abs(position.pos),
+                "unrealized_pnl": position.upl
+            }
+        
+        self.notifier.send_bot_status("running", current_price=price, has_position=has_position, position_info=position_info)
         
         while self.running:
             try:
@@ -609,7 +633,12 @@ class TradingBot:
         print("-" * 70)
         
         if position and abs(position.pos) > 0:
-            direction = "做多" if position.pos_side == "long" else "做空"
+            # 单向持仓模式 (net) 根据 pos 正负判断方向
+            # 双向持仓模式 (long/short) 根据 posSide 判断
+            if position.pos_side == "net":
+                direction = "做多" if position.pos > 0 else "做空"
+            else:
+                direction = "做多" if position.pos_side == "long" else "做空"
             total_value = position.avg_px * abs(position.pos)
             print(f"当前持仓 (OKX): {direction} {abs(position.pos):.0f} 张")
             print(f"OKX 均价: ${position.avg_px:.2f}")
