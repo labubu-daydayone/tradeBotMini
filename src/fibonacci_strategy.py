@@ -3,9 +3,37 @@
 根据价格动态计算目标持仓，在斐波那契关键点位触发买卖
 """
 import logging
+import random
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 from enum import Enum
+
+
+# 价格随机偏移小数部分 (.2, .3, .6, .7)
+PRICE_OFFSETS = [0.2, 0.3, 0.6, 0.7]
+
+
+def get_random_price_offset() -> float:
+    """获取随机价格偏移 (.2, .3, .6, .7)"""
+    return random.choice(PRICE_OFFSETS)
+
+
+def adjust_buy_price(base_price: float) -> float:
+    """
+    调整买入价格：略低于基准价格
+    例如: $130.00 -> $129.2 / $129.3 / $129.6 / $129.7
+    """
+    offset = get_random_price_offset()
+    return round(base_price - 1 + offset, 1)
+
+
+def adjust_sell_price(base_price: float) -> float:
+    """
+    调整卖出价格：略高于基准价格
+    例如: $133.00 -> $133.2 / $133.3 / $133.6 / $133.7
+    """
+    offset = get_random_price_offset()
+    return round(base_price + offset, 1)
 
 
 # 斥波那契关键比例 (15 个点位)

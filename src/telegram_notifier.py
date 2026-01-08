@@ -456,10 +456,11 @@ class TelegramNotifier:
         quantity: int,
         target_position: int,
         current_position: int,
-        fib_level: float,
-        fib_price: float,
-        reason: str,
-        pnl: float = None
+        fib_level: float = None,
+        fib_price: float = None,
+        reason: str = "",
+        pnl: float = None,
+        profit: float = None
     ) -> bool:
         """
         发送斥波那契交易通知
@@ -483,9 +484,10 @@ class TelegramNotifier:
         else:
             # 卖出通知 - 包含利润
             pnl_text = ""
-            if pnl is not None:
-                pnl_emoji = "📈" if pnl >= 0 else "📉"
-                pnl_text = f"{pnl_emoji} <b>本次利润:</b> ${pnl:.2f}\n"
+            actual_pnl = profit if profit is not None else pnl
+            if actual_pnl is not None:
+                pnl_emoji = "📈" if actual_pnl >= 0 else "📉"
+                pnl_text = f"{pnl_emoji} <b>本次利润:</b> ${actual_pnl:.2f}\n"
             
             message = f"""
 🔴 <b>斥波那契卖出</b> 🔴

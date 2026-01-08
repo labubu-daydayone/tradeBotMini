@@ -1,6 +1,6 @@
 """
 OKX SOL 全仓合约交易机器人
-主程序入口 - 斐波那契网格策略
+主程序入口 - 斐波那契网格策略 + 限价单预挂
 """
 import os
 import sys
@@ -9,7 +9,7 @@ import signal
 import logging
 import argparse
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List
 
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import AppConfig, get_config
 from okx_client import OKXClient, TickerInfo, PositionInfo
 from fibonacci_strategy import (
-    FibonacciStrategyEngine, FibonacciConfig, FibonacciSignal, TradeAction
+    FibonacciStrategyEngine, FibonacciConfig, FibonacciSignal, TradeAction,
+    adjust_buy_price, adjust_sell_price
 )
 from telegram_notifier import TelegramNotifier
 from database import TradingDatabase, SellResult
@@ -51,6 +52,10 @@ class TradingBot:
         # 当前状态
         self.current_position: Optional[PositionInfo] = None
         self.last_price: float = 0.0
+        
+        # 限价单管理
+        self.pending_buy_order: Optional[Dict] = None   # 当前挂的买入单
+        self.pending_sell_order: Optional[Dict] = None  # 当前挂的卖出单
         
         self.logger.info("交易机器人初始化完成")
         self.logger.info(f"模式: {'测试网(模拟盘)' if config.okx.use_testnet else '正式网(实盘)'}")
@@ -98,44 +103,38 @@ class TradingBot:
                 okx_avg = position.avg_px
                 
                 # 检查数据库是否有持仓记录
-                db_batches = self.db.get_position_lots(self.config.strategy.symbol)
-                db_total = sum(b['quantity'] for b in db_batches)
+                db_lots = self.db.get_position_lots(self.config.strategy.symbol)
+                db_qty = sum(lot.get('quantity', 0) for lot in db_lots)
                 
-                if db_total > 0:
-                    self.logger.info(f"数据库已有持仓: {db_total}张 @ ${db_batches[0]['entry_price']:.2f}")
-                else:
-                    # 数据库没有记录，使用 OKX 持仓同步
-                    self.logger.info(f"同步 OKX 持仓到数据库: {okx_qty}张 @ ${okx_avg:.2f}")
+                if db_qty == 0:
+                    # 数据库没有记录，用 OKX 均价创建初始批次
                     self.db.record_buy(
                         symbol=self.config.strategy.symbol,
                         entry_price=okx_avg,
-                        quantity=okx_qty,
+                        quantity=int(okx_qty),
                         direction="LONG",
-                        notes="初始同步 OKX 持仓"
+                        notes="初始同步: OKX 持仓"
                     )
-                
-                # 更新斐波那契策略的当前持仓
-                self.fib_strategy.current_position = int(okx_qty)
-                self.logger.info(f"斐波那契策略当前持仓: {self.fib_strategy.current_position} 张")
+                    self.logger.info(f"同步 OKX 持仓到数据库: {int(okx_qty)}张 @ ${okx_avg:.2f}")
+                else:
+                    self.logger.info(f"数据库已有持仓: {db_qty}张")
             else:
                 self.logger.info("当前无持仓")
-                self.fib_strategy.current_position = 0
                 
         except Exception as e:
             self.logger.error(f"同步初始持仓异常: {e}")
     
     def _signal_handler(self, signum, frame):
-        """信号处理"""
+        """信号处理器"""
         self.logger.info("收到停止信号，正在关闭...")
         self.running = False
     
     def get_current_price(self) -> Optional[float]:
         """获取当前价格"""
         try:
-            ticker = self.okx_client.get_ticker(self.config.strategy.symbol)
-            if ticker.get("code") == "0" and ticker.get("data"):
-                data = ticker["data"][0]
-                return float(data.get("last", 0))
+            result = self.okx_client.get_ticker(self.config.strategy.symbol)
+            if result.get("code") == "0" and result.get("data"):
+                return float(result["data"][0]["last"])
         except Exception as e:
             self.logger.error(f"获取价格异常: {e}")
         return None
@@ -176,6 +175,240 @@ class TradingBot:
             self.logger.error(f"获取持仓异常: {e}")
             return None
     
+    def get_pending_orders(self) -> List[Dict]:
+        """获取当前挂单"""
+        try:
+            result = self.okx_client.get_orders_pending(
+                inst_type="SWAP",
+                inst_id=self.config.strategy.symbol
+            )
+            if result.get("code") == "0":
+                return result.get("data", [])
+        except Exception as e:
+            self.logger.error(f"获取挂单异常: {e}")
+        return []
+    
+    def cancel_all_orders(self):
+        """取消所有挂单"""
+        try:
+            orders = self.get_pending_orders()
+            for order in orders:
+                ord_id = order.get("ordId")
+                if ord_id:
+                    self.okx_client.cancel_order(
+                        inst_id=self.config.strategy.symbol,
+                        ord_id=ord_id
+                    )
+                    self.logger.info(f"取消订单: {ord_id}")
+            self.pending_buy_order = None
+            self.pending_sell_order = None
+        except Exception as e:
+            self.logger.error(f"取消订单异常: {e}")
+    
+    def place_limit_buy_order(self, price: float, quantity: int) -> Optional[str]:
+        """挂买入限价单"""
+        try:
+            # 设置杠杆
+            self.okx_client.set_leverage(
+                inst_id=self.config.strategy.symbol,
+                lever=self.config.strategy.default_leverage,
+                mgn_mode="cross"
+            )
+            
+            result = self.okx_client.place_order(
+                inst_id=self.config.strategy.symbol,
+                td_mode="cross",
+                side="buy",
+                order_type="limit",
+                sz=str(quantity),
+                px=str(price)
+            )
+            
+            if result.get("code") == "0" and result.get("data"):
+                ord_id = result["data"][0].get("ordId")
+                self.pending_buy_order = {
+                    "ordId": ord_id,
+                    "price": price,
+                    "quantity": quantity
+                }
+                self.logger.info(f"挂买入限价单: {quantity} 张 @ ${price:.1f}, 订单ID: {ord_id}")
+                return ord_id
+            else:
+                self.logger.error(f"挂买入限价单失败: {result}")
+        except Exception as e:
+            self.logger.error(f"挂买入限价单异常: {e}")
+        return None
+    
+    def place_limit_sell_order(self, price: float, quantity: int) -> Optional[str]:
+        """挂卖出限价单"""
+        try:
+            result = self.okx_client.place_order(
+                inst_id=self.config.strategy.symbol,
+                td_mode="cross",
+                side="sell",
+                order_type="limit",
+                sz=str(quantity),
+                px=str(price),
+                reduce_only=True
+            )
+            
+            if result.get("code") == "0" and result.get("data"):
+                ord_id = result["data"][0].get("ordId")
+                self.pending_sell_order = {
+                    "ordId": ord_id,
+                    "price": price,
+                    "quantity": quantity
+                }
+                self.logger.info(f"挂卖出限价单: {quantity} 张 @ ${price:.1f}, 订单ID: {ord_id}")
+                return ord_id
+            else:
+                self.logger.error(f"挂卖出限价单失败: {result}")
+        except Exception as e:
+            self.logger.error(f"挂卖出限价单异常: {e}")
+        return None
+    
+    def check_order_filled(self, ord_id: str) -> Optional[Dict]:
+        """检查订单是否成交"""
+        try:
+            result = self.okx_client.get_order(
+                inst_id=self.config.strategy.symbol,
+                ord_id=ord_id
+            )
+            if result.get("code") == "0" and result.get("data"):
+                order = result["data"][0]
+                state = order.get("state")
+                if state == "filled":
+                    return {
+                        "ordId": ord_id,
+                        "side": order.get("side"),
+                        "fillPx": float(order.get("fillPx", 0)),
+                        "fillSz": float(order.get("fillSz", 0)),
+                        "state": state
+                    }
+        except Exception as e:
+            self.logger.error(f"检查订单状态异常: {e}")
+        return None
+    
+    def setup_limit_orders(self, current_price: float, current_position: int):
+        """设置限价单预挂"""
+        try:
+            # 获取上下两个斐波那契点位
+            fib_prices = self.fib_strategy.config.get_fib_prices()
+            
+            buy_level = None   # 下一个买入点位
+            sell_level = None  # 下一个卖出点位
+            
+            for i, (level, price, target_pos) in enumerate(fib_prices):
+                if price < current_price and target_pos > current_position:
+                    # 找到低于当前价格且需要买入的点位
+                    buy_level = (level, price, target_pos)
+                if price > current_price and target_pos < current_position:
+                    # 找到高于当前价格且需要卖出的点位
+                    if sell_level is None:
+                        sell_level = (level, price, target_pos)
+            
+            # 取消现有挂单
+            self.cancel_all_orders()
+            
+            # 挂买入限价单
+            if buy_level:
+                level, base_price, target_pos = buy_level
+                buy_qty = target_pos - current_position
+                if buy_qty > 0:
+                    # 应用随机价格偏移
+                    adjusted_price = adjust_buy_price(base_price)
+                    self.place_limit_buy_order(adjusted_price, buy_qty)
+                    self.logger.info(f"预挂买入单: 斐波那契 {level:.3f} 点位, 基准 ${base_price:.2f} -> 实际 ${adjusted_price:.1f}")
+            
+            # 挂卖出限价单（只有有持仓时才挂）
+            if sell_level and current_position > 0:
+                level, base_price, target_pos = sell_level
+                sell_qty = current_position - target_pos
+                if sell_qty > 0:
+                    # 应用随机价格偏移
+                    adjusted_price = adjust_sell_price(base_price)
+                    self.place_limit_sell_order(adjusted_price, sell_qty)
+                    self.logger.info(f"预挂卖出单: 斐波那契 {level:.3f} 点位, 基准 ${base_price:.2f} -> 实际 ${adjusted_price:.1f}")
+                    
+        except Exception as e:
+            self.logger.error(f"设置限价单异常: {e}")
+    
+    def check_and_handle_filled_orders(self, current_price: float, current_position: int):
+        """检查并处理已成交的订单"""
+        try:
+            # 检查买入单
+            if self.pending_buy_order:
+                ord_id = self.pending_buy_order["ordId"]
+                filled = self.check_order_filled(ord_id)
+                if filled:
+                    fill_price = filled["fillPx"]
+                    fill_qty = int(filled["fillSz"])
+                    
+                    self.logger.info(f"买入限价单成交: {fill_qty} 张 @ ${fill_price:.2f}")
+                    
+                    # 记录到数据库
+                    self.db.record_buy(
+                        symbol=self.config.strategy.symbol,
+                        entry_price=fill_price,
+                        quantity=fill_qty,
+                        direction="LONG",
+                        notes=f"限价单成交"
+                    )
+                    
+                    # 发送 Telegram 通知
+                    self.notifier.send_fibonacci_trade_notification(
+                        action="BUY",
+                        price=fill_price,
+                        quantity=fill_qty,
+                        target_position=current_position + fill_qty,
+                        current_position=current_position + fill_qty,
+                        reason="限价单成交"
+                    )
+                    
+                    self.pending_buy_order = None
+                    
+                    # 重新设置限价单
+                    new_position = current_position + fill_qty
+                    self.setup_limit_orders(current_price, new_position)
+            
+            # 检查卖出单
+            if self.pending_sell_order:
+                ord_id = self.pending_sell_order["ordId"]
+                filled = self.check_order_filled(ord_id)
+                if filled:
+                    fill_price = filled["fillPx"]
+                    fill_qty = int(filled["fillSz"])
+                    
+                    self.logger.info(f"卖出限价单成交: {fill_qty} 张 @ ${fill_price:.2f}")
+                    
+                    # 使用 FIFO 计算盈亏
+                    sell_result = self.db.record_sell_fifo(
+                        symbol=self.config.strategy.symbol,
+                        exit_price=fill_price,
+                        quantity=fill_qty,
+                        direction="LONG"
+                    )
+                    
+                    # 发送 Telegram 通知
+                    self.notifier.send_fibonacci_trade_notification(
+                        action="SELL",
+                        price=fill_price,
+                        quantity=fill_qty,
+                        target_position=current_position - fill_qty,
+                        current_position=current_position - fill_qty,
+                        profit=sell_result.total_profit if sell_result else 0,
+                        reason="限价单成交"
+                    )
+                    
+                    self.pending_sell_order = None
+                    
+                    # 重新设置限价单
+                    new_position = current_position - fill_qty
+                    self.setup_limit_orders(current_price, new_position)
+                    
+        except Exception as e:
+            self.logger.error(f"检查成交订单异常: {e}")
+    
     def run_once(self):
         """执行一次交易检查"""
         try:
@@ -194,22 +427,26 @@ class TradingBot:
             # 更新斐波那契策略的当前持仓
             self.fib_strategy.current_position = current_qty
             
-            # 获取斐波那契交易信号
-            signal = self.fib_strategy.generate_signal(price, current_qty)
+            # 检查已成交的限价单
+            self.check_and_handle_filled_orders(price, current_qty)
             
-            if signal:
-                self.logger.info(f"斐波那契{signal.action.value}信号: {signal.reason}")
+            # 如果没有挂单，设置新的限价单
+            if not self.pending_buy_order and not self.pending_sell_order:
+                # 首次启动或订单都已成交，检查是否需要初始化买入
+                signal = self.fib_strategy.generate_signal(price, current_qty)
                 
-                if signal.action == TradeAction.BUY:
-                    self._execute_fibonacci_buy(signal, price)
-                elif signal.action == TradeAction.SELL:
-                    self._execute_fibonacci_sell(signal, price, position)
+                if signal and signal.action == TradeAction.BUY and "初始化" in signal.reason:
+                    # 初始化买入使用市价单
+                    self._execute_market_buy(signal, price)
+                else:
+                    # 设置限价单预挂
+                    self.setup_limit_orders(price, current_qty)
             
         except Exception as e:
             self.logger.error(f"交易检查异常: {e}")
     
-    def _execute_fibonacci_buy(self, signal: FibonacciSignal, price: float):
-        """执行斐波那契买入"""
+    def _execute_market_buy(self, signal: FibonacciSignal, price: float):
+        """执行市价买入（用于初始化）"""
         try:
             # 设置杠杆
             self.okx_client.set_leverage(
@@ -230,7 +467,7 @@ class TradingBot:
             if result.get("code") == "0":
                 total_value = price * signal.quantity
                 self.logger.info(
-                    f"斐波那契买入成功: {signal.quantity} 张 @ ${price:.2f}, "
+                    f"初始化买入成功: {signal.quantity} 张 @ ${price:.2f}, "
                     f"合约金额 ${total_value:.2f}"
                 )
                 
@@ -240,7 +477,7 @@ class TradingBot:
                     entry_price=price,
                     quantity=signal.quantity,
                     direction="LONG",
-                    notes=f"斐波那契买入: {signal.reason}"
+                    notes=f"初始化买入: {signal.reason}"
                 )
                 
                 # 发送 Telegram 通知
@@ -250,170 +487,139 @@ class TradingBot:
                     quantity=signal.quantity,
                     target_position=signal.target_position,
                     current_position=signal.target_position,
-                    fib_level=signal.fib_level,
-                    fib_price=signal.fib_price,
                     reason=signal.reason
                 )
+                
+                # 设置限价单预挂
+                self.setup_limit_orders(price, signal.target_position)
             else:
-                self.logger.error(f"斐波那契买入失败: {result}")
+                self.logger.error(f"初始化买入失败: {result}")
                 
         except Exception as e:
-            self.logger.error(f"斐波那契买入异常: {e}")
+            self.logger.error(f"初始化买入异常: {e}")
     
-    def _execute_fibonacci_sell(self, signal: FibonacciSignal, price: float, position: PositionInfo):
-        """执行斐波那契卖出"""
-        try:
-            # 下单卖出
-            result = self.okx_client.place_order(
-                inst_id=self.config.strategy.symbol,
-                td_mode="cross",
-                side="sell",
-                order_type="market",
-                sz=str(signal.quantity),
-                reduce_only=True
+    def run(self):
+        """运行交易机器人"""
+        self.running = True
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        self.logger.info("交易机器人启动")
+        
+        # 发送启动通知
+        position = self.get_current_position()
+        price = self.get_current_price()
+        
+        if position and abs(position.pos) > 0:
+            pos_direction = "LONG" if position.pos > 0 else "SHORT"
+            position_info = {
+                'direction': pos_direction,
+                'entry_price': position.avg_px,
+                'size': abs(position.pos),
+                'unrealized_pnl': position.upl
+            }
+            self.notifier.send_bot_status(
+                status="运行中",
+                current_price=price,
+                has_position=True,
+                position_info=position_info
             )
-            
-            if result.get("code") == "0":
-                total_value = price * signal.quantity
-                
-                # 使用 FIFO 计算盈亏
-                sell_result = self.db.record_sell_fifo(
-                    symbol=self.config.strategy.symbol,
-                    exit_price=price,
-                    quantity=signal.quantity,
-                    direction="LONG",
-                    notes=f"斐波那契卖出: {signal.reason}"
-                )
-                
-                pnl = sell_result.total_pnl if sell_result else 0
-                
-                self.logger.info(
-                    f"斐波那契卖出成功: {signal.quantity} 张 @ ${price:.2f}, "
-                    f"合约金额 ${total_value:.2f}, 盈亏 ${pnl:.2f}"
-                )
-                
-                # 发送 Telegram 通知
-                self.notifier.send_fibonacci_trade_notification(
-                    action="SELL",
-                    price=price,
-                    quantity=signal.quantity,
-                    target_position=signal.target_position,
-                    current_position=signal.target_position,
-                    fib_level=signal.fib_level,
-                    fib_price=signal.fib_price,
-                    reason=signal.reason,
-                    pnl=pnl
-                )
-            else:
-                self.logger.error(f"斐波那契卖出失败: {result}")
-                
-        except Exception as e:
-            self.logger.error(f"斐波那契卖出异常: {e}")
+        else:
+            self.notifier.send_bot_status(
+                status="运行中",
+                current_price=price,
+                has_position=False
+            )
+        
+        # 主循环
+        interval = self.config.check_interval
+        while self.running:
+            try:
+                self.run_once()
+                time.sleep(interval)
+            except Exception as e:
+                self.logger.error(f"主循环异常: {e}")
+                time.sleep(interval)
+        
+        # 停止时取消所有挂单
+        self.logger.info("正在取消所有挂单...")
+        self.cancel_all_orders()
+        self.logger.info("交易机器人已停止")
     
     def show_status(self):
         """显示当前状态"""
-        price = self.get_current_price()
-        position = self.get_current_position()
-        current_qty = int(abs(position.pos)) if position else 0
-        
-        # 更新斐波那契策略
-        self.fib_strategy.current_position = current_qty
-        
         print("\n" + "=" * 70)
         print("SOL 全仓合约交易机器人状态 (斐波那契策略)")
         print("=" * 70)
+        
         print(f"模式: {'测试网(模拟盘)' if self.config.okx.use_testnet else '正式网(实盘)'}")
         print(f"交易对: {self.config.strategy.symbol}")
         print(f"默认杠杆: {self.config.strategy.default_leverage}x")
         
-        print("-" * 70)
+        # 斐波那契配置
         fib = self.config.strategy.fibonacci
-        print("斐波那契配置:")
+        print("-" * 70)
+        print("斐波那契策略配置:")
         print(f"  价格范围: ${fib.price_min:.0f} - ${fib.price_max:.0f}")
         print(f"  最大持仓: {fib.max_position} 张")
         
+        # 当前价格
+        price = self.get_current_price()
         if price:
-            target = self.fib_strategy.calculate_target_position(price)
-            levels = self.fib_strategy.get_fib_levels()
-            
             print("-" * 70)
             print(f"当前价格: ${price:.2f}")
+            
+            # 计算目标持仓
+            target = self.fib_strategy.calculate_target_position(price)
             print(f"目标持仓: {target} 张")
-            print(f"当前持仓: {current_qty} 张")
-            
-            if target > current_qty:
-                print(f"操作建议: 买入 {target - current_qty} 张")
-            elif target < current_qty:
-                print(f"操作建议: 卖出 {current_qty - target} 张")
-            else:
-                print("操作建议: 保持当前持仓")
-            
-            print("-" * 70)
-            print("斐波那契网格点位:")
-            for level in levels:
-                marker = " ← 当前" if abs(level['price'] - price) < 2 else ""
-                print(f"  {level['level']:.3f} | ${level['price']:.2f} | 目标 {level['target_position']} 张{marker}")
         
-        if position:
-            print("-" * 70)
-            # 判断方向
+        # 当前持仓
+        position = self.get_current_position()
+        if position and abs(position.pos) > 0:
+            # 单向持仓模式：根据 pos 正负判断方向
             if position.pos_side == "net":
                 direction = "做多" if position.pos > 0 else "做空"
             else:
                 direction = "做多" if position.pos_side == "long" else "做空"
             
+            print("-" * 70)
             print(f"当前持仓 (OKX): {direction} {abs(position.pos):.0f} 张")
             print(f"OKX 均价: ${position.avg_px:.2f}")
-            print(f"合约总金额: ${abs(position.pos) * position.avg_px:.2f}")
+            print(f"合约总金额: ${position.avg_px * abs(position.pos):.2f}")
             print(f"未实现盈亏: ${position.upl:.2f}")
-        
-        # 数据库统计
-        stats = self.db.get_statistics()
-        if stats:
+        else:
             print("-" * 70)
-            print("交易统计 (数据库):")
-            print(f"  总交易次数: {stats.get('total_trades', 0)}")
-            print(f"  累计盈亏: ${stats.get('total_pnl', 0):.2f}")
+            print("当前持仓: 无")
         
-        print("=" * 70)
-    
-    def run(self):
-        """运行交易机器人"""
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # 挂单状态
+        orders = self.get_pending_orders()
+        if orders:
+            print("-" * 70)
+            print("当前挂单:")
+            for order in orders:
+                side = "买入" if order.get("side") == "buy" else "卖出"
+                px = order.get("px", "0")
+                sz = order.get("sz", "0")
+                print(f"  {side}: {sz} 张 @ ${float(px):.1f}")
         
-        self.running = True
-        self.logger.info("交易机器人启动")
+        # 数据库持仓批次
+        db_lots = self.db.get_position_lots(self.config.strategy.symbol)
+        if db_lots:
+            print("-" * 70)
+            print("持仓批次 (FIFO):")
+            total_qty = 0
+            total_value = 0
+            for lot in db_lots:
+                qty = lot.get('quantity', 0)
+                px = lot.get('entry_price', 0)
+                total_qty += qty
+                total_value += qty * px
+                print(f"  {qty}张 @ ${px:.2f}")
+            if total_qty > 0:
+                avg = total_value / total_qty
+                print(f"  合计: {total_qty}张, 均价 ${avg:.2f}")
         
-        # 发送启动通知
-        price = self.get_current_price()
-        position = self.get_current_position()
-        position_info = None
-        if position and abs(position.pos) > 0:
-            position_info = {
-                'direction': 'LONG' if position.pos > 0 else 'SHORT',
-                'entry_price': position.avg_px,
-                'size': abs(position.pos),
-                'unrealized_pnl': position.upl
-            }
-        self.notifier.send_bot_status(
-            status="running",
-            current_price=price or 0,
-            has_position=position is not None and abs(position.pos) > 0,
-            position_info=position_info
-        )
-        
-        check_interval = self.config.check_interval
-        
-        while self.running:
-            try:
-                self.run_once()
-                time.sleep(check_interval)
-            except Exception as e:
-                self.logger.error(f"运行异常: {e}")
-                time.sleep(check_interval)
-        
-        self.logger.info("交易机器人已停止")
+        print("=" * 70 + "\n")
     
     def manual_buy(self, quantity: int):
         """手动买入"""
@@ -422,104 +628,145 @@ class TradingBot:
             print("无法获取价格")
             return
         
-        signal = FibonacciSignal(
-            action=TradeAction.BUY,
-            quantity=quantity,
-            target_position=self.fib_strategy.current_position + quantity,
-            fib_level=0,
-            fib_price=price,
-            reason="手动买入"
+        # 设置杠杆
+        self.okx_client.set_leverage(
+            inst_id=self.config.strategy.symbol,
+            lever=self.config.strategy.default_leverage,
+            mgn_mode="cross"
         )
-        self._execute_fibonacci_buy(signal, price)
+        
+        result = self.okx_client.place_order(
+            inst_id=self.config.strategy.symbol,
+            td_mode="cross",
+            side="buy",
+            order_type="market",
+            sz=str(quantity)
+        )
+        
+        if result.get("code") == "0":
+            print(f"买入成功: {quantity} 张 @ ${price:.2f}")
+            self.db.record_buy(
+                symbol=self.config.strategy.symbol,
+                entry_price=price,
+                quantity=quantity,
+                direction="LONG",
+                notes="手动买入"
+            )
+            self.notifier.send_fibonacci_trade_notification(
+                action="BUY",
+                price=price,
+                quantity=quantity,
+                target_position=quantity,
+                current_position=quantity,
+                reason="手动买入"
+            )
+        else:
+            print(f"买入失败: {result}")
     
     def manual_sell(self, quantity: int):
         """手动卖出"""
         price = self.get_current_price()
-        position = self.get_current_position()
-        
         if not price:
             print("无法获取价格")
             return
         
-        if not position or abs(position.pos) < quantity:
-            print(f"持仓不足，当前持仓: {abs(position.pos) if position else 0} 张")
-            return
-        
-        signal = FibonacciSignal(
-            action=TradeAction.SELL,
-            quantity=quantity,
-            target_position=self.fib_strategy.current_position - quantity,
-            fib_level=0,
-            fib_price=price,
-            reason="手动卖出"
+        result = self.okx_client.place_order(
+            inst_id=self.config.strategy.symbol,
+            td_mode="cross",
+            side="sell",
+            order_type="market",
+            sz=str(quantity),
+            reduce_only=True
         )
-        self._execute_fibonacci_sell(signal, price, position)
+        
+        if result.get("code") == "0":
+            print(f"卖出成功: {quantity} 张 @ ${price:.2f}")
+            
+            sell_result = self.db.record_sell_fifo(
+                symbol=self.config.strategy.symbol,
+                exit_price=price,
+                quantity=quantity,
+                direction="LONG"
+            )
+            
+            profit = sell_result.total_profit if sell_result else 0
+            self.notifier.send_fibonacci_trade_notification(
+                action="SELL",
+                price=price,
+                quantity=quantity,
+                target_position=0,
+                current_position=0,
+                profit=profit,
+                reason="手动卖出"
+            )
+            
+            if sell_result:
+                print(f"盈亏: ${profit:.2f}")
+        else:
+            print(f"卖出失败: {result}")
     
-    def add_position(self, quantity: float, price: float):
-        """手动添加持仓记录到数据库"""
+    def add_position(self, quantity: int, price: float):
+        """手动添加持仓记录（用于同步手动交易）"""
         self.db.record_buy(
             symbol=self.config.strategy.symbol,
             entry_price=price,
             quantity=quantity,
             direction="LONG",
-            is_manual=True,
-            notes="手动添加持仓"
+            notes="手动添加"
         )
         print(f"已添加持仓记录: {quantity} 张 @ ${price:.2f}")
 
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description="OKX SOL 全仓合约交易机器人")
+    parser = argparse.ArgumentParser(description="OKX SOL 交易机器人")
     parser.add_argument("--mode", choices=["run", "status", "buy", "sell", "test"],
-                       default="status", help="运行模式")
-    parser.add_argument("--testnet", action="store_true", help="使用测试网")
-    parser.add_argument("--quantity", type=int, help="买入/卖出张数")
-    parser.add_argument("--capital", type=float, help="本金 (USDT)")
+                        default="status", help="运行模式")
+    parser.add_argument("--quantity", type=int, help="买入/卖出数量")
+    parser.add_argument("--price", type=float, help="价格（用于添加持仓）")
     parser.add_argument("--add-position", action="store_true", help="添加持仓记录")
-    parser.add_argument("--price", type=float, help="持仓价格")
+    parser.add_argument("--testnet", action="store_true", help="使用测试网")
     
     args = parser.parse_args()
     
-    # 命令行参数覆盖环境变量（只有明确指定时）
-    if args.testnet:
-        os.environ["OKX_USE_TESTNET"] = "true"
-    if args.capital is not None:
-        os.environ["TRADING_CAPITAL"] = str(args.capital)
-    
-    # 获取配置
+    # 加载配置
     config = get_config()
+    
+    # 命令行参数覆盖
+    if args.testnet:
+        config.okx.use_testnet = True
     
     # 创建机器人
     bot = TradingBot(config)
     
-    # 处理添加持仓
+    # 执行对应模式
     if args.add_position:
-        if args.quantity and args.price:
-            bot.add_position(args.quantity, args.price)
-        else:
-            print("请指定 --quantity 和 --price")
-        return
-    
-    # 根据模式执行
-    if args.mode == "status":
-        bot.show_status()
+        if not args.quantity or not args.price:
+            print("添加持仓需要指定 --quantity 和 --price")
+            return
+        bot.add_position(args.quantity, args.price)
     elif args.mode == "run":
         bot.run()
-    elif args.mode == "buy":
-        if args.quantity:
-            bot.manual_buy(args.quantity)
-        else:
-            print("请指定 --quantity")
-    elif args.mode == "sell":
-        if args.quantity:
-            bot.manual_sell(args.quantity)
-        else:
-            print("请指定 --quantity")
-    elif args.mode == "test":
+    elif args.mode == "status":
         bot.show_status()
-        print("\n测试模式: 执行一次交易检查")
-        bot.run_once()
+    elif args.mode == "buy":
+        if not args.quantity:
+            print("买入需要指定 --quantity")
+            return
+        bot.manual_buy(args.quantity)
+    elif args.mode == "sell":
+        if not args.quantity:
+            print("卖出需要指定 --quantity")
+            return
+        bot.manual_sell(args.quantity)
+    elif args.mode == "test":
+        # 测试模式：显示斐波那契点位和价格偏移
+        print("\n斐波那契点位及价格偏移示例:")
+        print("-" * 50)
+        fib_prices = bot.fib_strategy.config.get_fib_prices()
+        for level, price, target in fib_prices:
+            buy_px = adjust_buy_price(price)
+            sell_px = adjust_sell_price(price)
+            print(f"  {level:.3f} | 基准 ${price:.2f} | 买入 ${buy_px:.1f} | 卖出 ${sell_px:.1f} | 目标 {target}张")
 
 
 if __name__ == "__main__":
