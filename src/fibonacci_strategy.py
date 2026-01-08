@@ -36,31 +36,65 @@ def adjust_sell_price(base_price: float) -> float:
     return round(base_price + offset, 1)
 
 
-# 默认斛波那契关键比例 (15 个点位)
-DEFAULT_FIBONACCI_LEVELS = [
-    0.000,  # 最低点
-    0.090,
-    0.146,
-    0.200,
-    0.236,  # 斛波那契回调位
-    0.300,
-    0.382,  # 斛波那契回调位
-    0.450,
-    0.500,  # 50% 位置
-    0.550,
-    0.618,  # 斛波那契黄金分割
-    0.700,
-    0.764,  # 斛波那契回调位
-    0.854,
-    1.000,  # 最高点
-]
+def generate_fibonacci_ratios(num_levels: int) -> List[float]:
+    """
+    根据点位数量自动生成斛波那契比例
+    
+    使用斛波那契数列的比例关系生成点位，包含经典斛波那契比例
+    
+    Args:
+        num_levels: 点位数量 (2-20)
+    
+    Returns:
+        斛波那契比例列表 [0.0, ..., 1.0]
+    
+    Example:
+        >>> generate_fibonacci_ratios(7)
+        [0.0, 0.236, 0.382, 0.5, 0.618, 0.764, 1.0]
+        >>> generate_fibonacci_ratios(15)
+        [0.0, 0.09, 0.146, 0.2, 0.236, 0.3, 0.382, 0.45, 0.5, 0.55, 0.618, 0.7, 0.764, 0.854, 1.0]
+    """
+    if num_levels < 2:
+        num_levels = 2
+    if num_levels > 20:
+        num_levels = 20
+    
+    # 经典斛波那契比例（按优先级排序）
+    classic_ratios = [
+        0.0,    # 必须包含
+        1.0,    # 必须包含
+        0.5,    # 50% 位置
+        0.618,  # 黄金分割
+        0.382,  # 1 - 0.618
+        0.236,  # 0.618 * 0.382
+        0.764,  # 1 - 0.236
+        0.146,  # 0.382 * 0.382
+        0.854,  # 1 - 0.146
+        0.090,  # 0.236 * 0.382
+        0.200,  # 补充点位
+        0.300,  # 补充点位
+        0.450,  # 补充点位
+        0.550,  # 补充点位
+        0.700,  # 补充点位
+    ]
+    
+    # 选取前 num_levels 个比例
+    selected = classic_ratios[:num_levels]
+    
+    # 如果需要更多点位，用线性插值补充
+    if num_levels > len(classic_ratios):
+        step = 1.0 / (num_levels - 1)
+        selected = [i * step for i in range(num_levels)]
+    
+    # 排序并返回
+    return sorted(selected)
 
 
 def calculate_fibonacci_levels(
     price_min: float,
     price_max: float,
     max_position: int,
-    fib_levels: List[float] = None
+    num_levels: int = 15
 ) -> List[Tuple[float, float, int]]:
     """
     计算斛波那契网格点位
@@ -69,7 +103,7 @@ def calculate_fibonacci_levels(
         price_min: 最低价格
         price_max: 最高价格
         max_position: 最大持仓张数
-        fib_levels: 自定义斛波那契比例列表，默认使用 15 个点位
+        num_levels: 点位数量，默认 15 个
     
     Returns:
         List of (fib_level, price, target_position)
@@ -78,7 +112,7 @@ def calculate_fibonacci_levels(
         - target_position: 目标持仓张数
     
     Example:
-        >>> levels = calculate_fibonacci_levels(100, 160, 40)
+        >>> levels = calculate_fibonacci_levels(100, 160, 40, num_levels=7)
         >>> for level, price, pos in levels:
         ...     print(f"Fib {level:.3f} @ ${price:.2f} -> {pos} 张")
         Fib 0.000 @ $100.00 -> 40 张
@@ -86,15 +120,16 @@ def calculate_fibonacci_levels(
         Fib 0.382 @ $122.92 -> 24 张
         Fib 0.500 @ $130.00 -> 20 张
         Fib 0.618 @ $137.08 -> 15 张
+        Fib 0.764 @ $145.84 -> 9 张
         Fib 1.000 @ $160.00 -> 0 张
     """
-    if fib_levels is None:
-        fib_levels = DEFAULT_FIBONACCI_LEVELS
+    # 根据数量生成斛波那契比例
+    fib_ratios = generate_fibonacci_ratios(num_levels)
     
     price_range = price_max - price_min
     result = []
     
-    for level in fib_levels:
+    for level in fib_ratios:
         # 计算价格: price_min + range * level
         price = price_min + price_range * level
         
@@ -145,7 +180,7 @@ class FibonacciConfig:
     max_position: int = 40        # 最大持仓张数
     symbol: str = "SOL-USDT-SWAP"
     leverage: int = 2             # 杠杆倍数
-    fib_levels: List[float] = None  # 自定义斛波那契比例，默认使用 15 个点位
+    num_levels: int = 15          # 斛波那契点位数量 (7 或 15)
     
     @property
     def price_range(self) -> float:
@@ -163,7 +198,7 @@ class FibonacciConfig:
             price_min=self.price_min,
             price_max=self.price_max,
             max_position=self.max_position,
-            fib_levels=self.fib_levels
+            num_levels=self.num_levels
         )
 
 
