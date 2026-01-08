@@ -525,7 +525,7 @@ class TradingBot:
                 inst_id=self.config.strategy.symbol,
                 td_mode="cross",
                 side="buy",
-                ord_type="market",
+                order_type="market",
                 sz=str(signal.quantity)
             )
             
@@ -570,8 +570,9 @@ class TradingBot:
                 inst_id=self.config.strategy.symbol,
                 td_mode="cross",
                 side="sell",
-                ord_type="market",
-                sz=str(signal.quantity)
+                order_type="market",
+                sz=str(signal.quantity),
+                reduce_only=True
             )
             
             if result.get("code") == "0":
