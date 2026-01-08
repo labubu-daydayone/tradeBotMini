@@ -98,7 +98,7 @@ class TradingBot:
                 okx_avg = position.avg_px
                 
                 # 检查数据库是否有持仓记录
-                db_batches = self.db.get_position_batches()
+                db_batches = self.db.get_position_lots(self.config.strategy.symbol)
                 db_total = sum(b['remaining_qty'] for b in db_batches)
                 
                 if db_total > 0:
@@ -195,7 +195,7 @@ class TradingBot:
             self.fib_strategy.current_position = current_qty
             
             # 获取斐波那契交易信号
-            signal = self.fib_strategy.get_signal(price)
+            signal = self.fib_strategy.generate_signal(price)
             
             if signal:
                 self.logger.info(f"斐波那契{signal.action.value}信号: {signal.reason}")
