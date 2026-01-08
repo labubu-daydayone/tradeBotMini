@@ -214,8 +214,8 @@ class AppConfig:
             reserve_profit_target=float(os.getenv("GRID_RESERVE_PROFIT", "10.0"))
         )
         
-        fibonacci_config = FibonacciGridConfig(
-            enabled=os.getenv("FIBONACCI_ENABLED", "false").lower() == "true",
+        fibonacci_config = FibonacciConfig(
+            enabled=os.getenv("FIBONACCI_ENABLED", "true").lower() == "true",
             price_min=float(os.getenv("FIBONACCI_PRICE_MIN", "100.0")),
             price_max=float(os.getenv("FIBONACCI_PRICE_MAX", "160.0")),
             max_position=int(os.getenv("FIBONACCI_MAX_POSITION", "40"))
