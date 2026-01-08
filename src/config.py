@@ -106,9 +106,9 @@ class GridConfig:
 
 
 @dataclass
-class FibonacciGridConfig:
-    """斥波那契网格策略配置"""
-    enabled: bool = False           # 是否启用斥波那契策略
+class FibonacciConfig:
+    """斥波那契策略配置"""
+    enabled: bool = True            # 默认启用斥波那契策略
     price_min: float = 100.0        # 最低价格
     price_max: float = 160.0        # 最高价格
     max_position: int = 40          # 最大持仓张数
@@ -164,7 +164,7 @@ class TradingStrategy:
     grid: GridConfig = field(default_factory=GridConfig)
     
     # 斥波那契网格策略配置
-    fibonacci: FibonacciGridConfig = field(default_factory=FibonacciGridConfig)
+    fibonacci: FibonacciConfig = field(default_factory=FibonacciConfig)
     
     # 测试模式配置（写死的测试金额）
     test_mode: bool = False
