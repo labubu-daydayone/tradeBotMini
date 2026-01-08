@@ -40,6 +40,10 @@ env/
 *.log
 logs/
 
+# 数据库文件
+*.db
+trading.db
+
 # 测试
 .pytest_cache/
 .coverage
