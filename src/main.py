@@ -684,8 +684,8 @@ def main():
     parser.add_argument(
         "--capital",
         type=float,
-        default=1000.0,
-        help="本金 (USDT)"
+        default=None,
+        help="本金 (USDT)，不指定则使用 .env 中的配置"
     )
     parser.add_argument(
         "--price",
@@ -703,7 +703,7 @@ def main():
     
     if args.testnet:
         os.environ["OKX_USE_TESTNET"] = "true"
-    if args.capital:
+    if args.capital is not None:
         os.environ["TRADING_CAPITAL"] = str(args.capital)
     
     config = get_config()
