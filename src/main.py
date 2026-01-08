@@ -55,7 +55,6 @@ class TradingBot:
         self.logger.info("交易机器人初始化完成")
         self.logger.info(f"模式: {'测试网(模拟盘)' if config.okx.use_testnet else '正式网(实盘)'}")
         self.logger.info(f"交易对: {config.strategy.symbol}")
-        self.logger.info(f"本金: {config.strategy.capital} USDT")
         self.logger.info(f"默认杠杆: {config.strategy.default_leverage}x")
         
         # 打印斐波那契策略配置
@@ -158,14 +157,19 @@ class TradingBot:
                         avg_px_str = pos_data.get("avgPx", "0")
                         upl_str = pos_data.get("upl", "0")
                         
+                        upl_ratio_str = pos_data.get("uplRatio", "0")
+                        margin_str = pos_data.get("margin", "0")
+                        lever_str = pos_data.get("lever", "1")
+                        
                         return PositionInfo(
                             inst_id=pos_data.get("instId", ""),
                             pos_side=pos_data.get("posSide", "net"),
                             pos=pos,
                             avg_px=float(avg_px_str) if avg_px_str else 0,
                             upl=float(upl_str) if upl_str else 0,
-                            lever=pos_data.get("lever", "1"),
-                            mgn_mode=pos_data.get("mgnMode", "cross")
+                            upl_ratio=float(upl_ratio_str) if upl_ratio_str else 0,
+                            lever=int(lever_str) if lever_str else 1,
+                            margin=float(margin_str) if margin_str else 0
                         )
             return None
         except Exception as e:
@@ -320,7 +324,6 @@ class TradingBot:
         print("=" * 70)
         print(f"模式: {'测试网(模拟盘)' if self.config.okx.use_testnet else '正式网(实盘)'}")
         print(f"交易对: {self.config.strategy.symbol}")
-        print(f"本金: {self.config.strategy.capital} USDT")
         print(f"默认杠杆: {self.config.strategy.default_leverage}x")
         
         print("-" * 70)
@@ -385,10 +388,19 @@ class TradingBot:
         # 发送启动通知
         price = self.get_current_price()
         position = self.get_current_position()
+        position_info = None
+        if position:
+            position_info = {
+                'direction': '做多' if position.pos > 0 else '做空',
+                'quantity': abs(position.pos),
+                'avg_price': position.avg_px,
+                'upl': position.upl
+            }
         self.notifier.send_bot_status(
-            status="运行中",
+            status="running",
             current_price=price or 0,
-            position=position
+            has_position=position is not None and abs(position.pos) > 0,
+            position_info=position_info
         )
         
         check_interval = self.config.check_interval
