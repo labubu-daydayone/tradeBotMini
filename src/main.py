@@ -361,6 +361,10 @@ class TradingBot:
                     f"保留 {reserve_qty} 张"
                 )
                 
+                # 卖出后更新上次交易价格（下次买入以此价格为参考）
+                self.strategy.last_buy_price = exit_price
+                self.logger.info(f"更新参考价格为卖出价: ${exit_price:.2f}")
+                
                 # 发送 Telegram 通知
                 stats = self.tracker.get_statistics()
                 self.notifier.send_grid_sell_notification(
