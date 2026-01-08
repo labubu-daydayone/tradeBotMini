@@ -142,6 +142,24 @@ class TradingBot:
     
     def get_current_position(self) -> Optional[PositionInfo]:
         """获取当前持仓"""
+        def safe_float(value, default=0.0):
+            """安全转换为 float，处理空字符串"""
+            if value is None or value == '':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_int(value, default=1):
+            """安全转换为 int，处理空字符串"""
+            if value is None or value == '':
+                return default
+            try:
+                return int(float(value))
+            except (ValueError, TypeError):
+                return default
+        
         try:
             result = self.okx_client.get_positions(
                 inst_type="SWAP",
@@ -152,12 +170,12 @@ class TradingBot:
                 position = PositionInfo(
                     inst_id=pos_data.get("instId", ""),
                     pos_side=pos_data.get("posSide", "net"),
-                    pos=float(pos_data.get("pos", 0)),
-                    avg_px=float(pos_data.get("avgPx", 0)),
-                    upl=float(pos_data.get("upl", 0)),
-                    upl_ratio=float(pos_data.get("uplRatio", 0)),
-                    lever=int(pos_data.get("lever", 1)),
-                    margin=float(pos_data.get("margin", 0))
+                    pos=safe_float(pos_data.get("pos")),
+                    avg_px=safe_float(pos_data.get("avgPx")),
+                    upl=safe_float(pos_data.get("upl")),
+                    upl_ratio=safe_float(pos_data.get("uplRatio")),
+                    lever=safe_int(pos_data.get("lever")),
+                    margin=safe_float(pos_data.get("margin"))
                 )
                 self.current_position = position
                 return position
