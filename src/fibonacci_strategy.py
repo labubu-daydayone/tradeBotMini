@@ -139,17 +139,24 @@ class FibonacciStrategyEngine:
         根据当前价格计算目标持仓
         
         价格越低，持仓越多；价格越高，持仓越少
-        使用线性插值
+        按斛波那契点位计算，价格在某个点位之上就使用该点位的目标持仓
         """
         if price <= self.config.price_min:
             return self.config.max_position
         if price >= self.config.price_max:
             return 0
         
-        # 线性计算：(price - min) / range 得到 0-1 的比例
-        ratio = (price - self.config.price_min) / self.config.price_range
-        target = int(self.config.max_position * (1 - ratio))
-        return max(0, min(self.config.max_position, target))
+        # 遍历斛波那契点位，找到当前价格所在的区间
+        # 价格在某个点位之上，就使用该点位的目标持仓
+        for i, (level, fib_price, target_pos) in enumerate(self.fib_levels):
+            if price < fib_price:
+                # 价格低于该点位，使用上一个点位的目标持仓
+                if i == 0:
+                    return self.config.max_position
+                return self.fib_levels[i - 1][2]
+        
+        # 价格超过最高点位
+        return self.fib_levels[-1][2]
     
     def find_nearest_fib_level(self, price: float) -> Tuple[int, float, float, int]:
         """

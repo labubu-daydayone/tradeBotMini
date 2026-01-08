@@ -340,15 +340,15 @@ class TradingBot:
                 print(f"卖出成功: {quantity} 张 @ ${price:.2f}, 合约金额 ${total_value:.2f}")
                 
                 # 使用 FIFO 计算盈亏
-                sell_result = self.db.record_sell_fifo(
+                trade_id, sell_result = self.db.record_sell_fifo(
                     symbol=self.config.strategy.symbol,
                     exit_price=price,
                     quantity=quantity,
                     direction="LONG"
                 )
                 
-                if sell_result:
-                    print(f"本次利润: ${sell_result.total_profit:.2f}")
+                if sell_result and sell_result.total_quantity > 0:
+                    print(f"本次利润: ${sell_result.total_pnl:.2f}")
             else:
                 print(f"卖出失败: {result}")
                 
