@@ -106,6 +106,15 @@ class GridConfig:
 
 
 @dataclass
+class FibonacciGridConfig:
+    """斥波那契网格策略配置"""
+    enabled: bool = False           # 是否启用斥波那契策略
+    price_min: float = 100.0        # 最低价格
+    price_max: float = 160.0        # 最高价格
+    max_position: int = 40          # 最大持仓张数
+
+
+@dataclass
 class TradingStrategy:
     """交易策略配置"""
     # 交易对
@@ -153,6 +162,9 @@ class TradingStrategy:
     
     # 网格交易配置
     grid: GridConfig = field(default_factory=GridConfig)
+    
+    # 斥波那契网格策略配置
+    fibonacci: FibonacciGridConfig = field(default_factory=FibonacciGridConfig)
     
     # 测试模式配置（写死的测试金额）
     test_mode: bool = False
@@ -202,12 +214,20 @@ class AppConfig:
             reserve_profit_target=float(os.getenv("GRID_RESERVE_PROFIT", "10.0"))
         )
         
+        fibonacci_config = FibonacciGridConfig(
+            enabled=os.getenv("FIBONACCI_ENABLED", "false").lower() == "true",
+            price_min=float(os.getenv("FIBONACCI_PRICE_MIN", "100.0")),
+            price_max=float(os.getenv("FIBONACCI_PRICE_MAX", "160.0")),
+            max_position=int(os.getenv("FIBONACCI_MAX_POSITION", "40"))
+        )
+        
         strategy_config = TradingStrategy(
             capital=float(os.getenv("TRADING_CAPITAL", "1000.0")),
             test_mode=os.getenv("TEST_MODE", "false").lower() == "true",
             safe_price_min=float(os.getenv("SAFE_PRICE_MIN", "90.0")),
             safe_price_max=float(os.getenv("SAFE_PRICE_MAX", "150.0")),
-            grid=grid_config
+            grid=grid_config,
+            fibonacci=fibonacci_config
         )
         
         return cls(

@@ -467,6 +467,103 @@ class TelegramNotifier:
         return self.send_message(message.strip())
 
 
+    def send_fibonacci_trade_notification(
+        self,
+        action: str,
+        price: float,
+        quantity: int,
+        target_position: int,
+        current_position: int,
+        fib_level: float,
+        fib_price: float,
+        reason: str,
+        pnl: float = None
+    ) -> bool:
+        """
+        发送斥波那契交易通知
+        """
+        if action.upper() == "BUY":
+            emoji = "🟢"
+            action_cn = "买入"
+        else:
+            emoji = "🔴"
+            action_cn = "卖出"
+        
+        total_value = price * quantity
+        
+        message = f"""
+{emoji} <b>斥波那契{action_cn}</b> {emoji}
+
+📊 <b>交易对:</b> SOL-USDT-SWAP
+💰 <b>价格:</b> ${price:.2f}
+📦 <b>数量:</b> {quantity} 张
+💵 <b>合约金额:</b> ${total_value:.2f}
+
+<b>━━━━━ 斥波那契点位 ━━━━━</b>
+📈 <b>触发级别:</b> {fib_level:.3f}
+📍 <b>触发价格:</b> ${fib_price:.2f}
+
+<b>━━━━━ 持仓状态 ━━━━━</b>
+🎯 <b>目标持仓:</b> {target_position} 张
+📦 <b>当前持仓:</b> {current_position} 张
+"""
+        
+        if pnl is not None:
+            pnl_emoji = "📈" if pnl >= 0 else "📉"
+            message += f"""
+<b>━━━━━ 盈亏 ━━━━━</b>
+{pnl_emoji} <b>本次盈亏:</b> ${pnl:.2f}
+"""
+        
+        message += f"""
+📝 <b>原因:</b> {reason}
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+    
+    def send_fibonacci_status(
+        self,
+        current_price: float,
+        current_position: int,
+        target_position: int,
+        fib_levels: list,
+        next_buy_price: float = None,
+        next_sell_price: float = None
+    ) -> bool:
+        """
+        发送斥波那契策略状态
+        """
+        position_diff = target_position - current_position
+        if position_diff > 0:
+            diff_text = f"需买入 {position_diff} 张"
+        elif position_diff < 0:
+            diff_text = f"需卖出 {-position_diff} 张"
+        else:
+            diff_text = "已达目标"
+        
+        message = f"""
+📈 <b>斥波那契策略状态</b> 📈
+
+💲 <b>SOL 价格:</b> ${current_price:.2f}
+📦 <b>当前持仓:</b> {current_position} 张
+🎯 <b>目标持仓:</b> {target_position} 张
+📊 <b>差异:</b> {diff_text}
+
+<b>━━━━━ 下一触发点 ━━━━━</b>
+"""
+        
+        if next_buy_price:
+            message += f"🟢 <b>下一买入点:</b> ${next_buy_price:.2f}\n"
+        if next_sell_price:
+            message += f"🔴 <b>下一卖出点:</b> ${next_sell_price:.2f}\n"
+        
+        message += f"""
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message.strip())
+
+
 if __name__ == "__main__":
     # 测试代码
     logging.basicConfig(level=logging.DEBUG)

@@ -20,6 +20,9 @@ from strategy import (
     TradingStrategyEngine, TradeTracker, PriceZone, 
     DropType, GridBuySignal, GridSellSignal
 )
+from fibonacci_strategy import (
+    FibonacciStrategyEngine, FibonacciConfig, FibonacciSignal, TradeAction
+)
 from telegram_notifier import TelegramNotifier
 from database import TradingDatabase, SellResult
 
@@ -41,6 +44,18 @@ class TradingBot:
         self.tracker = TradeTracker()
         self.db = TradingDatabase()  # SQLite 数据库
         
+        # 斥波那契策略引擎（如果启用）
+        self.fib_strategy: Optional[FibonacciStrategyEngine] = None
+        if config.strategy.fibonacci.enabled:
+            fib_config = FibonacciConfig(
+                price_min=config.strategy.fibonacci.price_min,
+                price_max=config.strategy.fibonacci.price_max,
+                max_position=config.strategy.fibonacci.max_position,
+                symbol=config.strategy.symbol,
+                leverage=config.strategy.default_leverage
+            )
+            self.fib_strategy = FibonacciStrategyEngine(fib_config)
+        
         # 当前状态
         self.current_position: Optional[PositionInfo] = None
         self.last_price: float = 0.0
@@ -54,14 +69,20 @@ class TradingBot:
         self.logger.info(f"默认杠杆: {config.strategy.default_leverage}x")
         self.logger.info(f"安全价格范围: ${config.strategy.safe_price_min:.0f} - ${config.strategy.safe_price_max:.0f}")
         
-        # 打印网格配置
-        grid = config.strategy.grid
-        self.logger.info("=== 网格交易配置 ===")
-        self.logger.info(f"正常跌幅: ${grid.normal_drop_min}-${grid.normal_drop_max}")
-        self.logger.info(f"大跌幅: ${grid.large_drop}+")
-        self.logger.info(f"高价区间买入: 正常 {grid.high_price_normal_qty} 张, 大跌 {grid.high_price_large_qty} 张")
-        self.logger.info(f"低价区间买入: 正常 {grid.low_price_normal_qty} 张, 大跌 {grid.low_price_large_qty} 张")
-        self.logger.info(f"保留张数: {grid.reserve_qty} 张 (涨 ${grid.reserve_profit_target} 后卖出)")
+        # 打印策略配置
+        if config.strategy.fibonacci.enabled:
+            fib = config.strategy.fibonacci
+            self.logger.info("=== 斥波那契网格策略 ===")
+            self.logger.info(f"价格范围: ${fib.price_min:.0f} - ${fib.price_max:.0f}")
+            self.logger.info(f"最大持仓: {fib.max_position} 张")
+        else:
+            grid = config.strategy.grid
+            self.logger.info("=== 网格交易配置 ===")
+            self.logger.info(f"正常跌幅: ${grid.normal_drop_min}-${grid.normal_drop_max}")
+            self.logger.info(f"大跌幅: ${grid.large_drop}+")
+            self.logger.info(f"高价区间买入: 正常 {grid.high_price_normal_qty} 张, 大跌 {grid.high_price_large_qty} 张")
+            self.logger.info(f"低价区间买入: 正常 {grid.low_price_normal_qty} 张, 大跌 {grid.low_price_large_qty} 张")
+            self.logger.info(f"保留张数: {grid.reserve_qty} 张 (涨 ${grid.reserve_profit_target} 后卖出)")
         
         # 同步初始持仓
         self._sync_initial_position()
@@ -458,15 +479,142 @@ class TradingBot:
         # 检查策略参数更新
         self.check_and_update_strategy(price)
         
+        # 获取当前持仓
+        position = self.get_current_position()
+        self.current_position = position
+        current_qty = int(abs(position.pos)) if position else 0
+        
+        # 根据策略类型执行不同逻辑
+        if self.fib_strategy:
+            self._run_fibonacci_strategy(price, current_qty, position)
+        else:
+            self._run_grid_strategy(price, current_qty, position)
+    
+    def _run_fibonacci_strategy(self, price: float, current_qty: int, position: Optional[PositionInfo]):
+        """执行斥波那契策略"""
+        # 检查价格是否在范围内
+        if not self.fib_strategy.is_price_in_range(price):
+            self.logger.debug(f"价格 ${price:.2f} 超出斥波那契范围，跳过交易")
+            return
+        
+        # 生成斥波那契信号
+        signal = self.fib_strategy.generate_signal(price, current_qty)
+        
+        if signal.action == TradeAction.BUY:
+            self.logger.info(f"斥波那契买入信号: {signal.reason}")
+            self._execute_fibonacci_buy(signal, price)
+        elif signal.action == TradeAction.SELL:
+            self.logger.info(f"斥波那契卖出信号: {signal.reason}")
+            if position:
+                self._execute_fibonacci_sell(signal, price, position)
+        else:
+            self.logger.debug(f"斥波那契保持: {signal.reason}")
+    
+    def _execute_fibonacci_buy(self, signal: FibonacciSignal, price: float):
+        """执行斥波那契买入"""
+        try:
+            # 设置杠杆
+            self.okx_client.set_leverage(
+                inst_id=self.config.strategy.symbol,
+                lever=self.config.strategy.default_leverage,
+                mgn_mode="cross"
+            )
+            
+            # 下单买入
+            result = self.okx_client.place_order(
+                inst_id=self.config.strategy.symbol,
+                td_mode="cross",
+                side="buy",
+                ord_type="market",
+                sz=str(signal.quantity)
+            )
+            
+            if result.get("code") == "0":
+                total_value = price * signal.quantity
+                self.logger.info(
+                    f"斥波那契买入成功: {signal.quantity} 张 @ ${price:.2f}, "
+                    f"合约金额 ${total_value:.2f}"
+                )
+                
+                # 记录到数据库
+                self.db.record_buy(
+                    symbol=self.config.strategy.symbol,
+                    price=price,
+                    quantity=signal.quantity,
+                    total_value=total_value,
+                    source="fibonacci"
+                )
+                
+                # 发送 Telegram 通知
+                self.notifier.send_fibonacci_trade_notification(
+                    action="BUY",
+                    price=price,
+                    quantity=signal.quantity,
+                    target_position=signal.target_position,
+                    current_position=signal.current_position + signal.quantity,
+                    fib_level=signal.triggered_level,
+                    fib_price=signal.triggered_price,
+                    reason=signal.reason
+                )
+            else:
+                self.logger.error(f"斥波那契买入失败: {result}")
+                
+        except Exception as e:
+            self.logger.error(f"斥波那契买入异常: {e}")
+    
+    def _execute_fibonacci_sell(self, signal: FibonacciSignal, price: float, position: PositionInfo):
+        """执行斥波那契卖出"""
+        try:
+            # 下单卖出
+            result = self.okx_client.place_order(
+                inst_id=self.config.strategy.symbol,
+                td_mode="cross",
+                side="sell",
+                ord_type="market",
+                sz=str(signal.quantity)
+            )
+            
+            if result.get("code") == "0":
+                total_value = price * signal.quantity
+                
+                # 计算盈亏（使用 FIFO）
+                sell_result = self.db.record_sell_fifo(
+                    symbol=self.config.strategy.symbol,
+                    sell_price=price,
+                    sell_quantity=signal.quantity
+                )
+                
+                pnl = sell_result.total_pnl if sell_result else 0
+                
+                self.logger.info(
+                    f"斥波那契卖出成功: {signal.quantity} 张 @ ${price:.2f}, "
+                    f"盈亏 ${pnl:.2f}"
+                )
+                
+                # 发送 Telegram 通知
+                self.notifier.send_fibonacci_trade_notification(
+                    action="SELL",
+                    price=price,
+                    quantity=signal.quantity,
+                    target_position=signal.target_position,
+                    current_position=signal.current_position - signal.quantity,
+                    fib_level=signal.triggered_level,
+                    fib_price=signal.triggered_price,
+                    reason=signal.reason,
+                    pnl=pnl
+                )
+            else:
+                self.logger.error(f"斥波那契卖出失败: {result}")
+                
+        except Exception as e:
+            self.logger.error(f"斥波那契卖出异常: {e}")
+    
+    def _run_grid_strategy(self, price: float, current_qty: int, position: Optional[PositionInfo]):
+        """执行原有网格策略"""
         # 检查价格安全性
         if not self.strategy.is_price_safe(price):
             self.logger.debug(f"价格 ${price:.2f} 超出安全范围，跳过交易")
             return
-        
-        # 获取当前持仓
-        position = self.get_current_position()
-        self.current_position = position
-        current_qty = abs(position.pos) if position else 0
         
         # 生成买入信号
         buy_signal = self.strategy.generate_buy_signal(price, current_qty)
