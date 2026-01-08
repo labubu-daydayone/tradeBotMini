@@ -132,9 +132,10 @@ class TradingBot:
     def get_current_price(self) -> Optional[float]:
         """获取当前价格"""
         try:
-            ticker = self.okx_client.get_ticker(self.config.strategy.symbol)
-            if ticker:
-                return ticker.last
+            result = self.okx_client.get_ticker(self.config.strategy.symbol)
+            if result and result.get("code") == "0" and result.get("data"):
+                ticker_data = result["data"][0]
+                return float(ticker_data.get("last", 0))
         except Exception as e:
             self.logger.error(f"获取价格失败: {e}")
         return None
@@ -142,13 +143,24 @@ class TradingBot:
     def get_current_position(self) -> Optional[PositionInfo]:
         """获取当前持仓"""
         try:
-            positions = self.okx_client.get_positions(
+            result = self.okx_client.get_positions(
                 inst_type="SWAP",
                 inst_id=self.config.strategy.symbol
             )
-            if positions:
-                self.current_position = positions[0]
-                return positions[0]
+            if result and result.get("code") == "0" and result.get("data"):
+                pos_data = result["data"][0]
+                position = PositionInfo(
+                    inst_id=pos_data.get("instId", ""),
+                    pos_side=pos_data.get("posSide", "net"),
+                    pos=float(pos_data.get("pos", 0)),
+                    avg_px=float(pos_data.get("avgPx", 0)),
+                    upl=float(pos_data.get("upl", 0)),
+                    upl_ratio=float(pos_data.get("uplRatio", 0)),
+                    lever=int(pos_data.get("lever", 1)),
+                    margin=float(pos_data.get("margin", 0))
+                )
+                self.current_position = position
+                return position
         except Exception as e:
             self.logger.error(f"获取持仓失败: {e}")
         return None
@@ -356,7 +368,7 @@ class TradingBot:
         print("-" * 70)
         if price:
             print(f"当前价格: ${price:.2f}")
-            target_pos = self.fib_strategy.get_target_position(price)
+            target_pos = self.fib_strategy.calculate_target_position(price)
             print(f"目标持仓: {target_pos} 张")
         
         if position and abs(position.pos) > 0:
