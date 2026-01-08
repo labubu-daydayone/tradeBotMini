@@ -2,8 +2,52 @@
 OKX SOL 全仓合约交易机器人配置文件
 """
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List
+
+# 自动加载 .env 文件
+def load_dotenv():
+    """从 .env 文件加载环境变量"""
+    # 查找 .env 文件的位置
+    # 优先查找项目根目录，然后是当前目录
+    possible_paths = [
+        Path(__file__).parent.parent / ".env",  # 项目根目录
+        Path.cwd() / ".env",  # 当前工作目录
+        Path(__file__).parent / ".env",  # src 目录
+    ]
+    
+    env_file = None
+    for path in possible_paths:
+        if path.exists():
+            env_file = path
+            break
+    
+    if env_file is None:
+        return
+    
+    # 读取并解析 .env 文件
+    with open(env_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            # 跳过空行和注释
+            if not line or line.startswith('#'):
+                continue
+            # 解析 KEY=VALUE 格式
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                # 移除引号
+                if (value.startswith('"') and value.endswith('"')) or \
+                   (value.startswith("'") and value.endswith("'")):
+                    value = value[1:-1]
+                # 只在环境变量未设置时才设置
+                if key not in os.environ:
+                    os.environ[key] = value
+
+# 在模块加载时自动加载 .env
+load_dotenv()
 
 
 @dataclass
