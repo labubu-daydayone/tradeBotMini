@@ -163,13 +163,13 @@ class TradingBot:
         
         # 下单
         try:
+            # 单向持仓模式不需要 pos_side 参数
             result = self.okx_client.place_order(
                 inst_id=self.config.strategy.symbol,
                 td_mode=self.config.strategy.margin_mode,
                 side="buy",
                 order_type="market",
-                sz=str(quantity),
-                pos_side="long"
+                sz=str(quantity)
             )
             
             if result.get("code") == "0":
@@ -224,14 +224,13 @@ class TradingBot:
         reserve_qty = signal.reserve_quantity
         
         try:
-            # 部分平仓
+            # 部分平仓（单向持仓模式不需要 pos_side 参数）
             result = self.okx_client.place_order(
                 inst_id=self.config.strategy.symbol,
                 td_mode=self.config.strategy.margin_mode,
                 side="sell",
                 order_type="market",
                 sz=str(sell_qty),
-                pos_side="long",
                 reduce_only=True
             )
             
