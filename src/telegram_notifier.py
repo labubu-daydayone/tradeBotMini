@@ -100,20 +100,10 @@ class TelegramNotifier:
         message = f"""
 🟢 <b>网格买入</b> 🟢
 
-📊 <b>交易对:</b> {symbol}
-📈 <b>方向:</b> {direction_cn}
-💰 <b>买入价格:</b> ${entry_price:.2f}
-📦 <b>买入张数:</b> {quantity} 张
-💵 <b>本次金额:</b> ${total_contract_value:.2f}
-
-<b>━━━━━ 触发条件 ━━━━━</b>
-📉 <b>跌幅:</b> ${drop_amount:.2f} ({drop_type_cn})
-
-<b>━━━━━ 持仓状态 ━━━━━</b>
+💰 <b>价格:</b> ${entry_price:.2f}
+📦 <b>数量:</b> {quantity} 张
+💵 <b>合约金额:</b> ${total_contract_value:.2f}
 📦 <b>当前持仓:</b> {current_position_qty:.0f} 张
-💵 <b>持仓价值:</b> ${current_position_value:.2f}
-🎯 <b>最大额度:</b> ${max_amount:.2f}
-💰 <b>剩余额度:</b> ${remaining_amount:.2f}
 
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -156,21 +146,13 @@ class TelegramNotifier:
         pnl_sign = "+" if pnl >= 0 else ""
         
         message = f"""
-💰 <b>{sell_type}</b> 💰
+🔴 <b>网格卖出</b> 🔴
 
-📊 <b>交易对:</b> {symbol}
-📈 <b>方向:</b> {direction_cn}
-💰 <b>开仓价格:</b> ${entry_price:.2f}
-💵 <b>平仓价格:</b> ${exit_price:.2f}
-📦 <b>卖出张数:</b> {sell_quantity} 张
-📦 <b>保留张数:</b> {reserve_quantity} 张
-💎 <b>卖出金额:</b> ${total_contract_value:.2f}
-
-<b>━━━━━ 交易结果 ━━━━━</b>
-{pnl_emoji} <b>盈亏:</b> ${pnl_sign}{pnl:.2f} ({pnl_sign}{pnl_pct:.2f}%)
-
-<b>━━━━━ 累计统计 ━━━━━</b>
-📈 <b>累计盈亏:</b> ${total_pnl:.2f}
+💰 <b>价格:</b> ${exit_price:.2f}
+📦 <b>数量:</b> {sell_quantity} 张
+💵 <b>合约金额:</b> ${total_contract_value:.2f}
+{pnl_emoji} <b>本次利润:</b> ${pnl_sign}{pnl:.2f} ({pnl_sign}{pnl_pct:.2f}%)
+📦 <b>剩余持仓:</b> {reserve_quantity} 张
 
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -481,45 +463,41 @@ class TelegramNotifier:
     ) -> bool:
         """
         发送斥波那契交易通知
+        买入: 只显示价格和数量
+        卖出: 显示价格、数量和利润
         """
-        if action.upper() == "BUY":
-            emoji = "🟢"
-            action_cn = "买入"
-        else:
-            emoji = "🔴"
-            action_cn = "卖出"
-        
         total_value = price * quantity
         
-        message = f"""
-{emoji} <b>斥波那契{action_cn}</b> {emoji}
+        if action.upper() == "BUY":
+            # 买入通知 - 简洁版
+            message = f"""
+🟢 <b>斥波那契买入</b> 🟢
 
-📊 <b>交易对:</b> SOL-USDT-SWAP
 💰 <b>价格:</b> ${price:.2f}
 📦 <b>数量:</b> {quantity} 张
 💵 <b>合约金额:</b> ${total_value:.2f}
-
-<b>━━━━━ 斥波那契点位 ━━━━━</b>
-📈 <b>触发级别:</b> {fib_level:.3f}
-📍 <b>触发价格:</b> ${fib_price:.2f}
-
-<b>━━━━━ 持仓状态 ━━━━━</b>
-🎯 <b>目标持仓:</b> {target_position} 张
 📦 <b>当前持仓:</b> {current_position} 张
-"""
-        
-        if pnl is not None:
-            pnl_emoji = "📈" if pnl >= 0 else "📉"
-            message += f"""
-<b>━━━━━ 盈亏 ━━━━━</b>
-{pnl_emoji} <b>本次盈亏:</b> ${pnl:.2f}
-"""
-        
-        message += f"""
-📝 <b>原因:</b> {reason}
 
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
+        else:
+            # 卖出通知 - 包含利润
+            pnl_text = ""
+            if pnl is not None:
+                pnl_emoji = "📈" if pnl >= 0 else "📉"
+                pnl_text = f"{pnl_emoji} <b>本次利润:</b> ${pnl:.2f}\n"
+            
+            message = f"""
+🔴 <b>斥波那契卖出</b> 🔴
+
+💰 <b>价格:</b> ${price:.2f}
+📦 <b>数量:</b> {quantity} 张
+💵 <b>合约金额:</b> ${total_value:.2f}
+{pnl_text}📦 <b>剩余持仓:</b> {current_position} 张
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        
         return self.send_message(message.strip())
     
     def send_fibonacci_status(
