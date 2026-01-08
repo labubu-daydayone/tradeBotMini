@@ -36,34 +36,116 @@ def adjust_sell_price(base_price: float) -> float:
     return round(base_price + offset, 1)
 
 
-# 斥波那契关键比例 (15 个点位)
-FIBONACCI_LEVELS = [
-    0.000,  # $100.00
-    0.090,  # $105.40
-    0.146,  # $108.76
-    0.200,  # $112.00
-    0.236,  # $114.16
-    0.300,  # $118.00
-    0.382,  # $122.92
-    0.450,  # $127.00
-    0.500,  # $130.00
-    0.550,  # $133.00
-    0.618,  # $137.08
-    0.700,  # $142.00
-    0.764,  # $145.84
-    0.854,  # $151.24
-    1.000,  # $160.00
+# 默认斛波那契关键比例 (15 个点位)
+DEFAULT_FIBONACCI_LEVELS = [
+    0.000,  # 最低点
+    0.090,
+    0.146,
+    0.200,
+    0.236,  # 斛波那契回调位
+    0.300,
+    0.382,  # 斛波那契回调位
+    0.450,
+    0.500,  # 50% 位置
+    0.550,
+    0.618,  # 斛波那契黄金分割
+    0.700,
+    0.764,  # 斛波那契回调位
+    0.854,
+    1.000,  # 最高点
 ]
+
+
+def calculate_fibonacci_levels(
+    price_min: float,
+    price_max: float,
+    max_position: int,
+    fib_levels: List[float] = None
+) -> List[Tuple[float, float, int]]:
+    """
+    计算斛波那契网格点位
+    
+    Args:
+        price_min: 最低价格
+        price_max: 最高价格
+        max_position: 最大持仓张数
+        fib_levels: 自定义斛波那契比例列表，默认使用 15 个点位
+    
+    Returns:
+        List of (fib_level, price, target_position)
+        - fib_level: 斛波那契比例 (0.0 - 1.0)
+        - price: 对应价格
+        - target_position: 目标持仓张数
+    
+    Example:
+        >>> levels = calculate_fibonacci_levels(100, 160, 40)
+        >>> for level, price, pos in levels:
+        ...     print(f"Fib {level:.3f} @ ${price:.2f} -> {pos} 张")
+        Fib 0.000 @ $100.00 -> 40 张
+        Fib 0.236 @ $114.16 -> 30 张
+        Fib 0.382 @ $122.92 -> 24 张
+        Fib 0.500 @ $130.00 -> 20 张
+        Fib 0.618 @ $137.08 -> 15 张
+        Fib 1.000 @ $160.00 -> 0 张
+    """
+    if fib_levels is None:
+        fib_levels = DEFAULT_FIBONACCI_LEVELS
+    
+    price_range = price_max - price_min
+    result = []
+    
+    for level in fib_levels:
+        # 计算价格: price_min + range * level
+        price = price_min + price_range * level
+        
+        # 计算目标持仓: 价格越低持仓越多，价格越高持仓越少
+        target_pos = int(max_position * (1 - level))
+        
+        result.append((level, price, target_pos))
+    
+    return result
+
+
+def get_target_position_at_price(
+    price: float,
+    fib_levels: List[Tuple[float, float, int]]
+) -> int:
+    """
+    根据当前价格获取目标持仓
+    
+    价格在某个斛波那契点位之上，就使用该点位的目标持仓
+    
+    Args:
+        price: 当前价格
+        fib_levels: 斛波那契点位列表 [(level, price, target_pos), ...]
+    
+    Returns:
+        目标持仓张数
+    """
+    if not fib_levels:
+        return 0
+    
+    # 遍历点位，找到当前价格所在的区间
+    for i, (level, fib_price, target_pos) in enumerate(fib_levels):
+        if price < fib_price:
+            # 价格低于该点位，使用上一个点位的目标持仓
+            if i == 0:
+                return fib_levels[0][2]  # 返回最大持仓
+            return fib_levels[i - 1][2]
+    
+    # 价格超过最高点位
+    return fib_levels[-1][2]
 
 
 @dataclass
 class FibonacciConfig:
-    """斐波那契策略配置"""
+    """斛波那契策略配置"""
     price_min: float = 100.0      # 最低价格
     price_max: float = 160.0      # 最高价格
     max_position: int = 40        # 最大持仓张数
     symbol: str = "SOL-USDT-SWAP"
     leverage: int = 2             # 杠杆倍数
+    fib_levels: List[float] = None  # 自定义斛波那契比例，默认使用 15 个点位
     
     @property
     def price_range(self) -> float:
@@ -72,18 +154,17 @@ class FibonacciConfig:
     
     def get_fib_prices(self) -> List[Tuple[float, float, int]]:
         """
-        获取所有斐波那契价格点位及对应目标持仓
+        获取所有斛波那契价格点位及对应目标持仓
         
         Returns:
             List of (fib_level, price, target_position)
         """
-        result = []
-        for level in FIBONACCI_LEVELS:
-            price = self.price_min + self.price_range * level
-            # 价格越低，持仓越多
-            target_pos = int(self.max_position * (1 - level))
-            result.append((level, price, target_pos))
-        return result
+        return calculate_fibonacci_levels(
+            price_min=self.price_min,
+            price_max=self.price_max,
+            max_position=self.max_position,
+            fib_levels=self.fib_levels
+        )
 
 
 class TradeAction(Enum):
@@ -146,17 +227,7 @@ class FibonacciStrategyEngine:
         if price >= self.config.price_max:
             return 0
         
-        # 遍历斛波那契点位，找到当前价格所在的区间
-        # 价格在某个点位之上，就使用该点位的目标持仓
-        for i, (level, fib_price, target_pos) in enumerate(self.fib_levels):
-            if price < fib_price:
-                # 价格低于该点位，使用上一个点位的目标持仓
-                if i == 0:
-                    return self.config.max_position
-                return self.fib_levels[i - 1][2]
-        
-        # 价格超过最高点位
-        return self.fib_levels[-1][2]
+        return get_target_position_at_price(price, self.fib_levels)
     
     def find_nearest_fib_level(self, price: float) -> Tuple[int, float, float, int]:
         """
