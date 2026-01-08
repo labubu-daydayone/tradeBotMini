@@ -21,7 +21,7 @@ from strategy import (
     DropType, GridBuySignal, GridSellSignal
 )
 from telegram_notifier import TelegramNotifier
-from database import TradingDatabase
+from database import TradingDatabase, SellResult
 
 
 class TradingBot:
@@ -63,6 +63,9 @@ class TradingBot:
         self.logger.info(f"低价区间买入: 正常 {grid.low_price_normal_qty} 张, 大跌 {grid.low_price_large_qty} 张")
         self.logger.info(f"保留张数: {grid.reserve_qty} 张 (涨 ${grid.reserve_profit_target} 后卖出)")
         
+        # 同步初始持仓
+        self._sync_initial_position()
+        
     def _setup_logging(self):
         """配置日志"""
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -83,6 +86,46 @@ class TradingBot:
         )
         
         self.logger = logging.getLogger(__name__)
+    
+    def _sync_initial_position(self):
+        """同步初始持仓（启动时调用）"""
+        try:
+            # 获取 OKX 当前持仓
+            position = self.get_current_position()
+            
+            if position and abs(position.pos) > 0:
+                okx_qty = abs(position.pos)
+                okx_avg = position.avg_px
+                
+                # 同步到数据库
+                synced = self.db.sync_initial_position(
+                    symbol=self.config.strategy.symbol,
+                    okx_quantity=okx_qty,
+                    okx_avg_price=okx_avg
+                )
+                
+                if synced:
+                    self.logger.info(f"已同步初始持仓: {okx_qty}张 @ ${okx_avg:.2f}")
+                    self.notifier.send_message(
+                        f"🔄 初始持仓同步\n"
+                        f"数量: {okx_qty} 张\n"
+                        f"OKX 均价: ${okx_avg:.2f}"
+                    )
+                else:
+                    # 显示数据库中的持仓批次
+                    db_qty, db_avg = self.db.get_total_position(self.config.strategy.symbol)
+                    self.logger.info(f"数据库持仓: {db_qty}张 @ ${db_avg:.2f}")
+                    
+                # 更新策略引擎的上次买入价格
+                db_qty, db_avg = self.db.get_total_position(self.config.strategy.symbol)
+                if db_avg > 0:
+                    self.strategy.last_buy_price = db_avg
+                    self.logger.info(f"设置上次买入价格: ${db_avg:.2f}")
+            else:
+                self.logger.info("OKX 无持仓")
+                
+        except Exception as e:
+            self.logger.error(f"同步初始持仓异常: {e}")
     
     def _signal_handler(self, signum, frame):
         """信号处理器"""
@@ -270,19 +313,28 @@ class TradingBot:
                     is_reserve=signal.is_reserve_sell
                 )
                 
-                # 记录到数据库
+                # 使用 FIFO 记账方式记录卖出
                 sell_type = "保留仓位止盈" if signal.is_reserve_sell else "策略止盈"
-                self.db.record_sell(
+                trade_id, fifo_result = self.db.record_sell_fifo(
                     symbol=self.config.strategy.symbol,
                     exit_price=exit_price,
                     quantity=sell_qty,
-                    entry_price=position.avg_px,
-                    pnl=pnl,
-                    pnl_pct=pnl_pct,
                     direction="LONG",
                     is_reserve=signal.is_reserve_sell,
                     notes=f"{sell_type}: 保留{reserve_qty}张"
                 )
+                
+                # 使用 FIFO 计算的真实盈亏
+                pnl = fifo_result.total_pnl
+                pnl_pct = (pnl / (fifo_result.avg_entry_price * fifo_result.total_quantity)) * 100 if fifo_result.total_quantity > 0 else 0
+                
+                # 记录 FIFO 匹配明细到日志
+                self.logger.info("FIFO 匹配明细:")
+                for lot in fifo_result.matched_lots:
+                    self.logger.info(
+                        f"  批次#{lot['lot_id']}: {lot['quantity']}张 @ ${lot['entry_price']:.2f} -> ${exit_price:.2f}, "
+                        f"盈亏 ${lot['pnl']:.2f} ({lot['pnl_pct']:+.2f}%)"
+                    )
                 
                 # 如果不是保留仓位卖出，记录保留仓位
                 if not signal.is_reserve_sell and reserve_qty > 0:
@@ -559,12 +611,17 @@ class TradingBot:
         if position and abs(position.pos) > 0:
             direction = "做多" if position.pos_side == "long" else "做空"
             total_value = position.avg_px * abs(position.pos)
-            print(f"当前持仓: {direction} {abs(position.pos):.0f} 张")
-            print(f"开仓均价: ${position.avg_px:.2f}")
+            print(f"当前持仓 (OKX): {direction} {abs(position.pos):.0f} 张")
+            print(f"OKX 均价: ${position.avg_px:.2f}")
             print(f"合约总金额: ${total_value:.2f}")
             print(f"未实现盈亏: ${position.upl:.2f} ({position.upl_ratio*100:.2f}%)")
         else:
-            print("当前持仓: 无")
+            print("当前持仓 (OKX): 无")
+        
+        # 显示 FIFO 持仓批次
+        print("-" * 70)
+        print("持仓批次 (FIFO):")
+        print(self.db.get_position_lots_summary(self.config.strategy.symbol))
         
         print("-" * 70)
         print("交易统计 (内存):")
@@ -630,6 +687,17 @@ def main():
         default=1000.0,
         help="本金 (USDT)"
     )
+    parser.add_argument(
+        "--price",
+        type=float,
+        default=None,
+        help="手动添加持仓时的买入价格"
+    )
+    parser.add_argument(
+        "--add-position",
+        action="store_true",
+        help="手动添加持仓批次"
+    )
     
     args = parser.parse_args()
     
@@ -652,6 +720,22 @@ def main():
     elif args.mode == "test":
         print("测试模式 - 检查 API 连接和策略参数")
         bot.show_status()
+    
+    # 手动添加持仓
+    if args.add_position:
+        if args.quantity is None or args.price is None:
+            print("错误: 手动添加持仓需要指定 --quantity 和 --price")
+            print("示例: python src/main.py --add-position --quantity 2 --price 120")
+        else:
+            lot_id = bot.db.add_manual_position(
+                symbol=config.strategy.symbol,
+                entry_price=args.price,
+                quantity=args.quantity,
+                notes=f"手动添加: {args.quantity}张 @ ${args.price:.2f}"
+            )
+            print(f"✅ 已添加持仓批次: ID={lot_id}, {args.quantity}张 @ ${args.price:.2f}")
+            print("\n当前持仓批次:")
+            print(bot.db.get_position_lots_summary(config.strategy.symbol))
 
 
 if __name__ == "__main__":
