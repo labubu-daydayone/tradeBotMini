@@ -424,11 +424,13 @@ class LimitOrderManager:
                 result["canceled_orders"].append(self.active_buy_order_l1)
                 self.active_buy_order_l1 = None
         
-        # 二级买入单（下一个斐波那契点位，额外 -1U）
-        if lower_l2:
-            _, fib_level, fib_price, target_pos = lower_l2
-            # 二级单数量：从当前持仓到二级点位的目标持仓
-            buy_qty = self.calculate_order_quantity(current_position, target_pos, "buy")
+        # 二级买入单（下一个斛波那契点位，额外 -1U）
+        if lower_l2 and lower_l1:
+            _, fib_level, fib_price, target_pos_l2 = lower_l2
+            _, _, _, target_pos_l1 = lower_l1
+            # 二级单数量：从 L1 目标持仓到 L2 目标持仓的差值
+            buy_qty = target_pos_l2 - target_pos_l1
+            buy_qty = max(0, buy_qty)
             
             if buy_qty > 0:
                 need_new = self._should_update_order(self.active_buy_order_l2, fib_level, buy_qty)
@@ -492,10 +494,13 @@ class LimitOrderManager:
                 result["canceled_orders"].append(self.active_sell_order_l1)
                 self.active_sell_order_l1 = None
         
-        # 二级卖出单（下一个斐波那契点位，额外 +1U）
-        if upper_l2 and current_position > 0:
-            _, fib_level, fib_price, target_pos = upper_l2
-            sell_qty = self.calculate_order_quantity(current_position, target_pos, "sell")
+        # 二级卖出单（下一个斛波那契点位，额外 +1U）
+        if upper_l2 and upper_l1 and current_position > 0:
+            _, fib_level, fib_price, target_pos_l2 = upper_l2
+            _, _, _, target_pos_l1 = upper_l1
+            # 二级单数量：从 L1 目标持仓到 L2 目标持仓的差值
+            sell_qty = target_pos_l1 - target_pos_l2
+            sell_qty = max(0, sell_qty)
             
             if sell_qty > 0:
                 need_new = self._should_update_order(self.active_sell_order_l2, fib_level, sell_qty)
