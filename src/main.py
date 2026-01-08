@@ -99,7 +99,7 @@ class TradingBot:
                 
                 # 检查数据库是否有持仓记录
                 db_batches = self.db.get_position_lots(self.config.strategy.symbol)
-                db_total = sum(b['remaining_qty'] for b in db_batches)
+                db_total = sum(b['quantity'] for b in db_batches)
                 
                 if db_total > 0:
                     self.logger.info(f"数据库已有持仓: {db_total}张 @ ${db_batches[0]['entry_price']:.2f}")
@@ -195,7 +195,7 @@ class TradingBot:
             self.fib_strategy.current_position = current_qty
             
             # 获取斐波那契交易信号
-            signal = self.fib_strategy.generate_signal(price)
+            signal = self.fib_strategy.generate_signal(price, current_qty)
             
             if signal:
                 self.logger.info(f"斐波那契{signal.action.value}信号: {signal.reason}")
@@ -389,12 +389,12 @@ class TradingBot:
         price = self.get_current_price()
         position = self.get_current_position()
         position_info = None
-        if position:
+        if position and abs(position.pos) > 0:
             position_info = {
-                'direction': '做多' if position.pos > 0 else '做空',
-                'quantity': abs(position.pos),
-                'avg_price': position.avg_px,
-                'upl': position.upl
+                'direction': 'LONG' if position.pos > 0 else 'SHORT',
+                'entry_price': position.avg_px,
+                'size': abs(position.pos),
+                'unrealized_pnl': position.upl
             }
         self.notifier.send_bot_status(
             status="running",
