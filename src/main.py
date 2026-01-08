@@ -21,6 +21,7 @@ from strategy import (
     DropType, GridBuySignal, GridSellSignal
 )
 from telegram_notifier import TelegramNotifier
+from database import TradingDatabase
 
 
 class TradingBot:
@@ -38,6 +39,7 @@ class TradingBot:
         self.strategy = TradingStrategyEngine(config.strategy)
         self.notifier = TelegramNotifier(config.telegram)
         self.tracker = TradeTracker()
+        self.db = TradingDatabase()  # SQLite 数据库
         
         # 当前状态
         self.current_position: Optional[PositionInfo] = None
@@ -181,6 +183,17 @@ class TradingBot:
                 # 更新上次买入价格
                 self.strategy.update_last_buy_price(current_price)
                 
+                # 记录到数据库
+                self.db.record_buy(
+                    symbol=self.config.strategy.symbol,
+                    entry_price=current_price,
+                    quantity=quantity,
+                    direction="LONG",
+                    drop_type=signal.drop_type.value,
+                    drop_amount=signal.drop_amount,
+                    notes=f"网格买入: 跌幅${signal.drop_amount:.2f}"
+                )
+                
                 # 发送 Telegram 通知
                 new_qty = current_qty + quantity
                 new_value = new_qty * current_price
@@ -246,7 +259,7 @@ class TradingBot:
                     is_long=True
                 )
                 
-                # 记录交易
+                # 记录交易到内存
                 self.tracker.record_trade(
                     entry_price=position.avg_px,
                     exit_price=exit_price,
@@ -257,9 +270,31 @@ class TradingBot:
                     is_reserve=signal.is_reserve_sell
                 )
                 
+                # 记录到数据库
+                sell_type = "保留仓位止盈" if signal.is_reserve_sell else "策略止盈"
+                self.db.record_sell(
+                    symbol=self.config.strategy.symbol,
+                    exit_price=exit_price,
+                    quantity=sell_qty,
+                    entry_price=position.avg_px,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    direction="LONG",
+                    is_reserve=signal.is_reserve_sell,
+                    notes=f"{sell_type}: 保留{reserve_qty}张"
+                )
+                
                 # 如果不是保留仓位卖出，记录保留仓位
                 if not signal.is_reserve_sell and reserve_qty > 0:
                     self.tracker.add_reserved_position(position.avg_px, reserve_qty)
+                    # 记录保留仓位到数据库
+                    target_price = position.avg_px + self.config.strategy.grid.reserve_profit_target
+                    self.db.add_reserved_position(
+                        symbol=self.config.strategy.symbol,
+                        entry_price=position.avg_px,
+                        quantity=reserve_qty,
+                        target_price=target_price
+                    )
                 
                 self.logger.info(
                     f"网格卖出成功: {sell_qty} 张 @ ${exit_price:.2f}, "
@@ -532,11 +567,40 @@ class TradingBot:
             print("当前持仓: 无")
         
         print("-" * 70)
+        print("交易统计 (内存):")
         stats = self.tracker.get_statistics()
-        print(f"总交易次数: {stats['total_trades']}")
-        print(f"胜率: {stats['win_rate']:.1f}%")
-        print(f"累计盈亏: ${stats['total_pnl']:.2f}")
-        print(f"保留仓位: {stats['reserved_quantity']:.0f} 张")
+        print(f"  总交易次数: {stats['total_trades']}")
+        print(f"  胜率: {stats['win_rate']:.1f}%")
+        print(f"  累计盈亏: ${stats['total_pnl']:.2f}")
+        print(f"  保留仓位: {stats['reserved_quantity']:.0f} 张")
+        
+        print("-" * 70)
+        print("交易统计 (数据库):")
+        db_stats = self.db.get_statistics(self.config.strategy.symbol)
+        print(f"  总交易次数: {db_stats['total_trades']}")
+        print(f"  胜率: {db_stats['win_rate']:.1f}%")
+        print(f"  累计盈亏: ${db_stats['total_pnl']:.2f}")
+        print(f"  总交易量: ${db_stats['total_volume']:.2f}")
+        print(f"  保留仓位: {db_stats['reserved_quantity']:.0f} 张")
+        
+        # 显示今日统计
+        daily_stats = self.db.get_daily_stats()
+        print("-" * 70)
+        print(f"今日统计 ({daily_stats['date']}):")
+        print(f"  交易次数: {daily_stats['total_trades']}")
+        print(f"  胜率: {daily_stats['win_rate']:.1f}%")
+        print(f"  今日盈亏: ${daily_stats['total_pnl']:.2f}")
+        
+        # 显示最近交易记录
+        recent_trades = self.db.get_trade_history(self.config.strategy.symbol, limit=5)
+        if recent_trades:
+            print("-" * 70)
+            print("最近交易记录:")
+            for trade in recent_trades:
+                side = "买入" if trade['side'] == 'BUY' else "卖出"
+                pnl_str = f", 盈亏 ${trade['pnl']:.2f}" if trade['pnl'] else ""
+                print(f"  {trade['created_at'][:16]} | {side} {trade['quantity']:.0f}张 @ ${trade['entry_price']:.2f}{pnl_str}")
+        
         print("=" * 70)
 
 

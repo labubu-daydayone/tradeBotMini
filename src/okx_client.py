@@ -383,17 +383,30 @@ class PositionInfo:
             return positions
         
         for pos in data["data"]:
-            if float(pos.get("pos", 0)) != 0:
-                positions.append(cls(
-                    inst_id=pos.get("instId", ""),
-                    pos_side=pos.get("posSide", "net"),
-                    pos=float(pos.get("pos", 0)),
-                    avg_px=float(pos.get("avgPx", 0)),
-                    upl=float(pos.get("upl", 0)),
-                    upl_ratio=float(pos.get("uplRatio", 0)),
-                    lever=int(pos.get("lever", 1)),
-                    margin=float(pos.get("margin", 0))
-                ))
+            try:
+                # 安全解析数值，处理空字符串情况
+                pos_val = pos.get("pos", "0") or "0"
+                avg_px_val = pos.get("avgPx", "0") or "0"
+                upl_val = pos.get("upl", "0") or "0"
+                upl_ratio_val = pos.get("uplRatio", "0") or "0"
+                lever_val = pos.get("lever", "1") or "1"
+                margin_val = pos.get("margin", "0") or "0"
+                
+                pos_float = float(pos_val)
+                if pos_float != 0:
+                    positions.append(cls(
+                        inst_id=pos.get("instId", ""),
+                        pos_side=pos.get("posSide", "net"),
+                        pos=pos_float,
+                        avg_px=float(avg_px_val),
+                        upl=float(upl_val),
+                        upl_ratio=float(upl_ratio_val),
+                        lever=int(float(lever_val)),
+                        margin=float(margin_val)
+                    ))
+            except (ValueError, TypeError) as e:
+                # 跳过无法解析的持仓数据
+                continue
         return positions
 
 
