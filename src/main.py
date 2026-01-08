@@ -40,11 +40,15 @@ class TradingBot:
         self.current_position: Optional[PositionInfo] = None
         self.last_price: float = 0.0
         self.last_zone: Optional[PriceZone] = None
+        self.last_safe_status: Optional[bool] = None  # 上次价格是否安全
         
         self.logger.info("交易机器人初始化完成")
         self.logger.info(f"模式: {'测试网(模拟盘)' if config.okx.use_testnet else '正式网(实盘)'}")
         self.logger.info(f"交易对: {config.strategy.symbol}")
         self.logger.info(f"本金: {config.strategy.capital} USDT")
+        self.logger.info(f"默认杠杆: {config.strategy.default_leverage}x")
+        self.logger.info(f"安全价格范围: ${config.strategy.safe_price_min:.0f} - ${config.strategy.safe_price_max:.0f}")
+        self.logger.info(f"测试模式: {'是' if config.strategy.test_mode else '否'}")
         
     def _setup_logging(self):
         """配置日志"""
@@ -131,11 +135,21 @@ class TradingBot:
         if not price:
             return False
         
+        # 检查价格是否安全
+        can_trade, reason = self.strategy.can_trade(price)
+        if not can_trade:
+            self.logger.warning(f"无法开仓: {reason}")
+            self.notifier.send_error_notification(f"无法开仓: {reason}")
+            return False
+        
         # 计算策略参数
         contract_amount, leverage = self.strategy.calculate_contract_amount(price)
         position_size = self.strategy.calculate_position_size(price, contract_amount)
         profit_target = self.strategy.calculate_profit_target(price)
         tp_price = self.strategy.calculate_take_profit_price(price, is_long)
+        
+        # 计算合约总金额 (价格 × 张数)
+        total_contract_value = self.strategy.calculate_total_contract_value(price, position_size)
         
         # 设置杠杆
         if not self.setup_leverage(leverage):
@@ -160,7 +174,8 @@ class TradingBot:
             
             if result.get("code") == "0":
                 self.logger.info(
-                    f"开仓成功: {'做多' if is_long else '做空'} {position_size} 张 @ ${price:.2f}"
+                    f"开仓成功: {'做多' if is_long else '做空'} {position_size} 张 @ ${price:.2f}, "
+                    f"合约总金额: ${total_contract_value:.2f}"
                 )
                 
                 # 发送 Telegram 通知
@@ -169,7 +184,7 @@ class TradingBot:
                     direction="LONG" if is_long else "SHORT",
                     entry_price=price,
                     position_size=position_size,
-                    contract_amount=contract_amount,
+                    total_contract_value=total_contract_value,
                     leverage=leverage,
                     target_profit_pct=profit_target,
                     take_profit_price=tp_price
@@ -199,6 +214,11 @@ class TradingBot:
                 exit_price = self.get_current_price() or position.avg_px
                 is_long = position.pos_side == "long"
                 
+                # 计算合约总金额 (平仓价格 × 张数)
+                total_contract_value = self.strategy.calculate_total_contract_value(
+                    exit_price, abs(position.pos)
+                )
+                
                 # 计算盈亏
                 pnl, pnl_pct = self.strategy.calculate_pnl(
                     entry_price=position.avg_px,
@@ -219,6 +239,7 @@ class TradingBot:
                 
                 self.logger.info(
                     f"平仓成功: {'做多' if is_long else '做空'} @ ${exit_price:.2f}, "
+                    f"合约总金额: ${total_contract_value:.2f}, "
                     f"盈亏: ${pnl:.2f} ({pnl_pct:+.2f}%)"
                 )
                 
@@ -230,6 +251,7 @@ class TradingBot:
                     entry_price=position.avg_px,
                     exit_price=exit_price,
                     position_size=abs(position.pos),
+                    total_contract_value=total_contract_value,
                     pnl=pnl,
                     pnl_pct=pnl_pct,
                     total_pnl=stats["total_pnl"]
@@ -246,8 +268,38 @@ class TradingBot:
     def check_and_update_strategy(self, price: float):
         """检查并更新策略参数（当价格区间变化时）"""
         current_zone = self.strategy.get_price_zone(price)
+        is_safe = self.strategy.is_price_safe(price)
         
-        if self.last_zone and current_zone != self.last_zone:
+        # 检查安全状态变化
+        if self.last_safe_status is not None and is_safe != self.last_safe_status:
+            if is_safe:
+                # 从不安全变为安全
+                self.logger.info(f"价格 ${price:.2f} 回到安全范围，恢复交易")
+                self.notifier.send_message(
+                    f"🟢 <b>安全提醒</b>\n\n"
+                    f"价格 ${price:.2f} 回到安全范围 "
+                    f"(${self.config.strategy.safe_price_min:.0f} - ${self.config.strategy.safe_price_max:.0f})\n"
+                    f"交易功能已恢复"
+                )
+            else:
+                # 从安全变为不安全
+                if price < self.config.strategy.safe_price_min:
+                    reason = f"低于安全下限 ${self.config.strategy.safe_price_min:.0f}"
+                else:
+                    reason = f"高于安全上限 ${self.config.strategy.safe_price_max:.0f}"
+                
+                self.logger.warning(f"价格 ${price:.2f} 超出安全范围，停止交易")
+                self.notifier.send_message(
+                    f"🔴 <b>安全警告</b>\n\n"
+                    f"价格 ${price:.2f} {reason}\n"
+                    f"安全范围: ${self.config.strategy.safe_price_min:.0f} - ${self.config.strategy.safe_price_max:.0f}\n\n"
+                    f"⚠️ 交易功能已暂停，等待价格回归安全范围"
+                )
+        
+        self.last_safe_status = is_safe
+        
+        # 检查价格区间变化（仅在安全范围内）
+        if is_safe and self.last_zone and current_zone != self.last_zone and current_zone != PriceZone.UNSAFE:
             # 价格区间发生变化
             self.logger.info(f"价格区间变化: {self.last_zone.value} -> {current_zone.value}")
             
@@ -256,7 +308,8 @@ class TradingBot:
                 current_price=price,
                 price_zone=current_zone.value,
                 profit_target=summary["profit_target_pct"],
-                contract_amount=summary["contract_amount_usdt"],
+                total_contract_value=summary["total_contract_value"],
+                position_size=summary["position_size"],
                 leverage=summary["leverage"]
             )
         
@@ -271,7 +324,15 @@ class TradingBot:
             return
         
         self.last_price = price
-        self.logger.debug(f"当前 SOL 价格: ${price:.2f}")
+        
+        # 检查价格安全性
+        is_safe = self.strategy.is_price_safe(price)
+        zone = self.strategy.get_price_zone(price)
+        
+        if is_safe:
+            self.logger.debug(f"当前 SOL 价格: ${price:.2f} (安全, {zone.value}区间)")
+        else:
+            self.logger.debug(f"当前 SOL 价格: ${price:.2f} (不安全, 停止交易)")
         
         # 检查策略参数更新
         self.check_and_update_strategy(price)
@@ -282,8 +343,10 @@ class TradingBot:
         
         if position:
             # 有持仓，检查是否需要平仓
+            total_value = position.avg_px * abs(position.pos)
             self.logger.debug(
                 f"当前持仓: {position.pos_side} {position.pos} 张 @ ${position.avg_px:.2f}, "
+                f"合约总金额: ${total_value:.2f}, "
                 f"未实现盈亏: ${position.upl:.2f} ({position.upl_ratio*100:.2f}%)"
             )
             
@@ -353,18 +416,33 @@ class TradingBot:
         print("SOL 全仓合约交易机器人状态")
         print("=" * 60)
         print(f"模式: {'测试网(模拟盘)' if self.config.okx.use_testnet else '正式网(实盘)'}")
+        print(f"测试模式: {'是 (使用固定金额)' if self.config.strategy.test_mode else '否 (按比例计算)'}")
         print(f"交易对: {self.config.strategy.symbol}")
         print(f"本金: {self.config.strategy.capital} USDT")
+        print(f"默认杠杆: {self.config.strategy.default_leverage}x")
+        print(f"安全价格范围: ${self.config.strategy.safe_price_min:.0f} - ${self.config.strategy.safe_price_max:.0f}")
         print("-" * 60)
         
         if price:
             summary = self.strategy.get_strategy_summary(price)
+            
             print(f"当前价格: ${price:.2f}")
             print(f"价格区间: {summary['price_zone'].upper()}")
-            print(f"目标利润: {summary['profit_target_pct']:.2f}%")
-            print(f"合约金额: ${summary['contract_amount_usdt']:.2f}")
-            print(f"杠杆倍数: {summary['leverage']}x")
-            print(f"开仓张数: {summary['position_size']:.2f}")
+            print(f"可交易: {'是 ✓' if summary['can_trade'] else '否 ✗'}")
+            
+            if not summary['can_trade']:
+                print(f"原因: {summary['trade_reason']}")
+            else:
+                zone_cn = "高价区间 (120-150)" if summary['price_zone'] == "high" else "低价区间 (90-120)"
+                ratio = self.config.strategy.high_price_leverage_ratio if summary['price_zone'] == "high" else self.config.strategy.low_price_leverage_ratio
+                
+                print(f"区间说明: {zone_cn}")
+                print(f"合约倍数: {ratio}x (本金的 {ratio*100:.0f}%)")
+                print(f"目标利润: {summary['profit_target_pct']:.2f}%")
+                print(f"开仓张数: {summary['position_size']:.2f}")
+                print(f"合约总金额: ${summary['total_contract_value']:.2f} (${price:.2f} × {summary['position_size']:.2f})")
+                print(f"做多止盈: ${summary['take_profit_long']:.2f}")
+                print(f"做空止盈: ${summary['take_profit_short']:.2f}")
         else:
             print("无法获取价格")
         
@@ -372,8 +450,10 @@ class TradingBot:
         
         if position:
             direction = "做多" if position.pos_side == "long" else "做空"
+            total_value = position.avg_px * abs(position.pos)
             print(f"当前持仓: {direction} {abs(position.pos):.2f} 张")
             print(f"开仓均价: ${position.avg_px:.2f}")
+            print(f"合约总金额: ${total_value:.2f}")
             print(f"未实现盈亏: ${position.upl:.2f} ({position.upl_ratio*100:.2f}%)")
         else:
             print("当前持仓: 无")
@@ -401,6 +481,11 @@ def main():
         help="使用测试网"
     )
     parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="使用测试模式（固定金额）"
+    )
+    parser.add_argument(
         "--capital",
         type=float,
         default=1000.0,
@@ -412,6 +497,8 @@ def main():
     # 设置环境变量（如果通过命令行指定）
     if args.testnet:
         os.environ["OKX_USE_TESTNET"] = "true"
+    if args.test_mode:
+        os.environ["TEST_MODE"] = "true"
     if args.capital:
         os.environ["TRADING_CAPITAL"] = str(args.capital)
     

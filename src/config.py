@@ -43,31 +43,35 @@ class TradingStrategy:
     # 交易对
     symbol: str = "SOL-USDT-SWAP"
     
-    # 价格阈值
+    # 价格阈值（高低价区间分界线）
     price_threshold: float = 120.0
     
-    # 合约金额配置
-    # 价格 >= 120 时，合约总金额为本金的 110%
-    high_price_leverage_ratio: float = 1.10
-    # 价格 < 120 时，合约总金额固定为 1800 USDT
-    low_price_contract_amount: float = 1800.0
+    # 安全价格范围（超出此范围停止交易）
+    safe_price_min: float = 90.0   # 低于此价格停止交易
+    safe_price_max: float = 150.0  # 高于此价格停止交易
+    
+    # 合约金额配置（按本金比例计算）
+    # 价格 >= 120 时，合约总金额 = 本金 * 1.1 倍
+    high_price_leverage_ratio: float = 1.1
+    # 价格 < 120 时，合约总金额 = 本金 * 1.8 倍
+    low_price_leverage_ratio: float = 1.8
     
     # 利润百分比配置（基于价格的线性关系）
-    # 价格 >= 120: 利润目标 2.3% - 2.7%
-    high_price_profit_min: float = 2.3
-    high_price_profit_max: float = 2.7
+    # 价格 120-150 (高价区间): 利润目标 2.3% - 2.7%
+    high_price_profit_min: float = 2.3  # 价格 150 时
+    high_price_profit_max: float = 2.7  # 价格 120 时
     
-    # 价格 < 120: 利润目标 3.0% - 4.5%
-    low_price_profit_min: float = 3.0
-    low_price_profit_max: float = 4.5
+    # 价格 90-120 (低价区间): 利润目标 3.0% - 4.5%
+    low_price_profit_min: float = 3.0   # 价格 120 时
+    low_price_profit_max: float = 4.5   # 价格 90 时
     
     # 价格区间定义（用于计算线性利润）
-    # 高价区间: 120 - 200
+    # 高价区间: 120 - 150
     high_price_range_min: float = 120.0
-    high_price_range_max: float = 200.0
+    high_price_range_max: float = 150.0
     
-    # 低价区间: 50 - 120
-    low_price_range_min: float = 50.0
+    # 低价区间: 90 - 120
+    low_price_range_min: float = 90.0
     low_price_range_max: float = 120.0
     
     # 本金（USDT）
@@ -76,8 +80,13 @@ class TradingStrategy:
     # 全仓模式
     margin_mode: str = "cross"  # cross: 全仓, isolated: 逐仓
     
-    # 杠杆倍数（默认值，实际会根据策略动态调整）
-    default_leverage: int = 10
+    # 默认杠杆倍数（固定2倍杠杆）
+    default_leverage: int = 2
+    
+    # 测试模式配置（写死的测试金额）
+    test_mode: bool = False
+    test_high_price_amount: float = 1100.0  # 测试模式高价区间固定金额
+    test_low_price_amount: float = 1800.0   # 测试模式低价区间固定金额
 
 
 @dataclass
@@ -111,7 +120,10 @@ class AppConfig:
         )
         
         strategy_config = TradingStrategy(
-            capital=float(os.getenv("TRADING_CAPITAL", "1000.0"))
+            capital=float(os.getenv("TRADING_CAPITAL", "1000.0")),
+            test_mode=os.getenv("TEST_MODE", "false").lower() == "true",
+            safe_price_min=float(os.getenv("SAFE_PRICE_MIN", "90.0")),
+            safe_price_max=float(os.getenv("SAFE_PRICE_MAX", "150.0"))
         )
         
         return cls(

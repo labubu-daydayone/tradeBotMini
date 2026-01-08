@@ -70,13 +70,23 @@ class TelegramNotifier:
         direction: str,
         entry_price: float,
         position_size: float,
-        contract_amount: float,
+        total_contract_value: float,
         leverage: int,
         target_profit_pct: float,
         take_profit_price: float
     ) -> bool:
         """
         发送开仓通知
+        
+        Args:
+            symbol: 交易对
+            direction: 方向 (LONG/SHORT)
+            entry_price: 开仓价格
+            position_size: 持仓张数
+            total_contract_value: 合约总金额 (价格 × 张数)
+            leverage: 杠杆倍数
+            target_profit_pct: 目标利润百分比
+            take_profit_price: 止盈价格
         """
         emoji = "🟢" if direction.upper() == "LONG" else "🔴"
         direction_cn = "做多" if direction.upper() == "LONG" else "做空"
@@ -87,8 +97,9 @@ class TelegramNotifier:
 📊 <b>交易对:</b> {symbol}
 📈 <b>方向:</b> {direction_cn}
 💰 <b>开仓价格:</b> ${entry_price:.2f}
-📦 <b>持仓数量:</b> {position_size:.4f}
-💵 <b>合约金额:</b> ${contract_amount:.2f}
+📦 <b>持仓张数:</b> {position_size:.2f}
+💵 <b>合约总金额:</b> ${total_contract_value:.2f}
+   <i>(${entry_price:.2f} × {position_size:.2f} 张)</i>
 ⚡ <b>杠杆倍数:</b> {leverage}x
 🎯 <b>目标利润:</b> {target_profit_pct:.2f}%
 🏁 <b>止盈价格:</b> ${take_profit_price:.2f}
@@ -104,12 +115,24 @@ class TelegramNotifier:
         entry_price: float,
         exit_price: float,
         position_size: float,
+        total_contract_value: float,
         pnl: float,
         pnl_pct: float,
         total_pnl: float = None
     ) -> bool:
         """
         发送平仓通知
+        
+        Args:
+            symbol: 交易对
+            direction: 方向 (LONG/SHORT)
+            entry_price: 开仓价格
+            exit_price: 平仓价格
+            position_size: 持仓张数
+            total_contract_value: 合约总金额 (平仓价格 × 张数)
+            pnl: 盈亏金额
+            pnl_pct: 盈亏百分比
+            total_pnl: 累计盈亏
         """
         direction_cn = "做多" if direction.upper() == "LONG" else "做空"
         
@@ -128,7 +151,9 @@ class TelegramNotifier:
 📈 <b>方向:</b> {direction_cn}
 💰 <b>开仓价格:</b> ${entry_price:.2f}
 💵 <b>平仓价格:</b> ${exit_price:.2f}
-📦 <b>持仓数量:</b> {position_size:.4f}
+📦 <b>持仓张数:</b> {position_size:.2f}
+💎 <b>合约总金额:</b> ${total_contract_value:.2f}
+   <i>(${exit_price:.2f} × {position_size:.2f} 张)</i>
 
 <b>━━━━━ 交易结果 ━━━━━</b>
 {result_emoji} <b>{result_text}:</b> ${pnl:.2f} ({pnl_pct:+.2f}%)
@@ -151,11 +176,20 @@ class TelegramNotifier:
         current_price: float,
         price_zone: str,
         profit_target: float,
-        contract_amount: float,
+        total_contract_value: float,
+        position_size: float,
         leverage: int
     ) -> bool:
         """
         发送策略参数更新通知
+        
+        Args:
+            current_price: 当前价格
+            price_zone: 价格区间
+            profit_target: 目标利润
+            total_contract_value: 合约总金额 (价格 × 张数)
+            position_size: 持仓张数
+            leverage: 杠杆倍数
         """
         zone_emoji = "🔥" if price_zone.upper() == "HIGH" else "❄️"
         zone_cn = "高价区间" if price_zone.upper() == "HIGH" else "低价区间"
@@ -166,7 +200,9 @@ class TelegramNotifier:
 💲 <b>当前价格:</b> ${current_price:.2f}
 📊 <b>价格区间:</b> {zone_cn}
 🎯 <b>目标利润:</b> {profit_target:.2f}%
-💵 <b>合约金额:</b> ${contract_amount:.2f}
+📦 <b>开仓张数:</b> {position_size:.2f}
+💵 <b>合约总金额:</b> ${total_contract_value:.2f}
+   <i>(${current_price:.2f} × {position_size:.2f} 张)</i>
 ⚡ <b>杠杆倍数:</b> {leverage}x
 
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -211,12 +247,16 @@ class TelegramNotifier:
         
         if has_position and position_info:
             direction = "做多" if position_info.get("direction") == "LONG" else "做空"
+            entry_price = position_info.get('entry_price', 0)
+            size = position_info.get('size', 0)
+            total_value = entry_price * size
             message += f"""
 <b>━━━━━ 当前持仓 ━━━━━</b>
 📈 <b>方向:</b> {direction}
-💰 <b>开仓价:</b> ${position_info.get('entry_price', 0):.2f}
-📦 <b>数量:</b> {position_info.get('size', 0):.4f}
-💵 <b>未实现盈亏:</b> ${position_info.get('unrealized_pnl', 0):.2f}
+💰 <b>开仓价:</b> ${entry_price:.2f}
+📦 <b>张数:</b> {size:.2f}
+💵 <b>合约总金额:</b> ${total_value:.2f}
+💎 <b>未实现盈亏:</b> ${position_info.get('unrealized_pnl', 0):.2f}
 """
         else:
             message += "📭 <b>持仓:</b> 无\n"
@@ -270,13 +310,18 @@ if __name__ == "__main__":
     
     # 测试消息格式
     print("测试开仓通知格式:")
+    # 模拟: 价格 $120, 开 5 张, 合约总金额 = 120 * 5 = 600
+    entry_price = 120.0
+    position_size = 5.0
+    total_contract_value = entry_price * position_size  # 600
+    
     notifier.send_trade_open_notification(
         symbol="SOL-USDT-SWAP",
         direction="LONG",
-        entry_price=125.50,
-        position_size=8.76,
-        contract_amount=1100.0,
-        leverage=11,
-        target_profit_pct=2.5,
-        take_profit_price=128.64
+        entry_price=entry_price,
+        position_size=position_size,
+        total_contract_value=total_contract_value,
+        leverage=2,
+        target_profit_pct=2.7,
+        take_profit_price=123.24
     )
